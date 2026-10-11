@@ -36,7 +36,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 // Pi가 혼잡 진입/상승/종료를 감지한 즉시 보내는 이벤트를 받아 BE가 직접 밀도·혼잡 단계를
 // 계산하고 저장한다. 멱등 저장/처리 상태 전이/after-commit 발행 구조는 CongestionObservationService
-// (5초 관측값)와 동일한 패턴을 쓰되, CongestionEventRepository는 처리 소유자(lease) 없이
+// (주기 관측값)와 동일한 패턴을 쓰되, CongestionEventRepository는 처리 소유자(lease) 없이
 // RECEIVED/PROCESSING/PROCESSED/FAILED 상태만으로 동시 처리를 막는다.
 @Slf4j
 @Service
@@ -103,7 +103,7 @@ public class CongestionEventService {
 
         try {
             List<MapEdge> affectedEdges = resolveAffectedEdges(cctv.getId());
-            // 현재 상태(CurrentCctvStateItem)는 5초 주기 Observation만을 기준 데이터로 삼는다.
+            // 현재 상태(CurrentCctvStateItem)는 주기 Observation만을 기준 데이터로 삼는다.
             // 즉시 이벤트는 여기서 상태를 갱신하지 않고 타임라인/재탐색 트리거/WebSocket 발행에만 쓰인다
             // (CongestionObservationService.updateCurrentState 참고).
 
@@ -127,7 +127,7 @@ public class CongestionEventService {
                     routeRecalculationService.trigger(
                             session, affectedEdges, savedLevel, triggerType, cctv.getCode(), density);
                 } else {
-                    // STARTED/LEVEL_UP은 혼잡이 지속되는 동안 다음 관측값이 5초마다 재시도해주므로
+                    // STARTED/LEVEL_UP은 혼잡이 지속되는 동안 다음 관측값이 관측 주기마다 재시도해주므로
                     // 비동기로 떼어내도 안전하다 (#250). MapEdge 엔티티가 아니라 id만 넘기고,
                     // detectedAt을 함께 넘겨 너무 늦게 실행될 낡은 판단은 triggerAsync가 스스로
                     // 건너뛰게 한다.

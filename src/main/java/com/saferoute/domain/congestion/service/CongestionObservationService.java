@@ -45,7 +45,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-// Pi가 5초마다 보내는 관측값을 받아 BE가 직접 밀도·혼잡 단계를 계산하고 저장한다.
+// Pi가 snapshotIntervalSec(기본 2초)마다 보내는 관측값을 받아 BE가 직접 밀도·혼잡 단계를 계산하고 저장한다.
 // 멱등 저장/처리 lease/after-commit 발행 구조는 CongestionEventService와 유사한 패턴을 쓴다.
 @Slf4j
 @Service
@@ -143,7 +143,7 @@ public class CongestionObservationService {
             updateCurrentState(session.getId(), cctv.getCode(), request, saveResult.item());
 
             CongestionLevel savedLevel = saveResult.item().getCongestionLevel();
-            // 관측값은 5초 단위 스냅샷이라 STARTED/ENDED 같은 이벤트 구분이 없다 - 항상 LEVEL_UP으로 취급한다
+            // 관측값은 주기적 스냅샷이라 STARTED/ENDED 같은 이벤트 구분이 없다 - 항상 LEVEL_UP으로 취급한다
             // (즉시 이벤트의 CONGESTION_ENDED 기반 복구 트리거는 CongestionEventService가 전담한다).
             if (savedLevel.requiresRouteRecalculation()) {
                 if (affectedEdges.isEmpty()) {
@@ -153,7 +153,7 @@ public class CongestionObservationService {
                             session.getId(), cctv.getCode(), savedLevel
                     );
                 } else {
-                    // 관측값은 항상 LEVEL_UP이라 혼잡이 지속되면 5초마다 재시도되므로 비동기로
+                    // 관측값은 항상 LEVEL_UP이라 혼잡이 지속되면 관측 주기마다 재시도되므로 비동기로
                     // 떼어내도 안전하다 (#250) - ENDED는 이 서비스가 다루지 않는다
                     // (CongestionEventService 참고). MapEdge 엔티티가 아니라 id만 넘기고,
                     // capturedAt을 함께 넘겨 너무 늦게 실행될 낡은 판단은 triggerAsync가 스스로

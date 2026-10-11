@@ -250,7 +250,7 @@ public class TrainingMonitoringController {
                                                 "startedAt": 1787722000000,
                                                 "endedAt": null,
                                                 "elapsedSeconds": 95,
-                                                "snapshotIntervalSec": 5,
+                                                "snapshotIntervalSec": 2,
                                                 "stateStaleAfterSec": 15
                                               }
                                             }
@@ -326,11 +326,11 @@ public class TrainingMonitoringController {
                     무관하게 조회할 수 있으며, 종료된 세션은 훈련 중 마지막으로 저장된 상태를 그대로
                     보여줍니다(실시간으로 갱신되지 않습니다).
 
-                    기준 데이터는 5초 주기 Observation입니다. 혼잡 시작/상승/해소 즉시 이벤트는
+                    기준 데이터는 snapshotIntervalSec 주기(기본 2초) Observation입니다. 혼잡 시작/상승/해소 즉시 이벤트는
                     이 상태를 갱신하지 않으며, 이벤트 타임라인(GET /monitoring/events)과 WebSocket
                     알림에만 반영됩니다.
 
-                    avgHeadcount는 최근 5초 관측 구간의 평균 인원, peakHeadcount는 같은 구간의
+                    avgHeadcount는 최근 관측 구간의 평균 인원, peakHeadcount는 같은 구간의
                     순간 최대 인원입니다. density와 congestionLevel은 서버가 계산한 값을 그대로
                     반환합니다.
 
@@ -493,7 +493,7 @@ public class TrainingMonitoringController {
                     이미지 업로드가 아직 끝나지 않은 프레임은 imageUrl, urlExpiresAt이 null로
                     반환됩니다. capturedAt은 Unix epoch milliseconds 단위입니다.
 
-                    windowStart/windowEnd는 이 프레임이 대표하는 분석 구간(보통 5초)의
+                    windowStart/windowEnd는 이 프레임이 대표하는 분석 구간(snapshotIntervalSec, 기본 2초)의
                     시작/종료 시각이고, capturedAt은 그 구간을 대표해 저장된 프레임이 실제로
                     촬영된 시각입니다. 훈련 전체의 시작/종료 시각(GET .../monitoring/context의
                     startedAt/endedAt)과는 다른 시간 축이므로 혼동하지 마세요.

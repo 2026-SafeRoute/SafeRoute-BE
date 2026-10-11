@@ -28,14 +28,14 @@ public record CurrentCctvStateResponse(
         String location,
 
         @Schema(
-                description = "최근 5초 관측 구간의 평균 인원. 상태가 없으면 null",
+                description = "최근 관측 구간의 평균 인원. 상태가 없으면 null",
                 example = "8.6",
                 nullable = true
         )
         Double avgHeadcount,
 
         @Schema(
-                description = "최근 5초 관측 구간의 순간 최대 인원. 상태가 없으면 null",
+                description = "최근 관측 구간의 순간 최대 인원. 상태가 없으면 null",
                 example = "12",
                 nullable = true
         )

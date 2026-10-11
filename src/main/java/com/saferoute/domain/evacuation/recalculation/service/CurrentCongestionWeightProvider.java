@@ -59,7 +59,7 @@ public class CurrentCongestionWeightProvider {
         return currentMultipliers(sessionId, floorId, Set.of());
     }
 
-    // excludedCctvCodes에 든 CCTV의 현재 상태는 집계에서 뺀다. 혼잡 종료(ENDED) 직후에는 5초 주기 관측값이
+    // excludedCctvCodes에 든 CCTV의 현재 상태는 집계에서 뺀다. 혼잡 종료(ENDED) 직후에는 주기 관측값이
     // 아직 갱신되기 전이라 방금 끝난 CCTV가 여전히 혼잡으로 남아 있을 수 있어, 그 CCTV 몫만 제외하고 나머지
     // CCTV의 혼잡은 그대로 반영해야 한다. 엣지 단위로 빼면 같은 엣지를 감시하는 다른 CCTV의 혼잡까지
     // 사라지므로 CCTV 코드 기준으로 제외한다.
@@ -82,7 +82,7 @@ public class CurrentCongestionWeightProvider {
             }
             multiplierByCctvCode.put(state.getCctvCode(), multiplier);
         }
-        // 5초마다 호출될 수 있어 INFO 이상은 쓰지 않는다.
+        // 관측 주기마다 호출될 수 있어 INFO 이상은 쓰지 않는다.
         if (!staleCctvCodes.isEmpty()) {
             log.debug("관측이 끊긴 CCTV의 혼잡을 가중치에서 제외: sessionId={}, cctvCodes={}", sessionId, staleCctvCodes);
         }

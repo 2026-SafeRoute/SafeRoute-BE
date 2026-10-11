@@ -29,7 +29,7 @@ public class RouteDeviationController {
                     지정한 IoT 유도등이 훈련 세션 동안 안내한 방향과, 같은 통로를 감시하는
                     CCTV가 실제로 인원을 탐지한 위치를 시간 축으로 대조해 경로 이탈률을
                     계산합니다. totalObservedWindows는 유도등이 좌/우 중 한쪽을 가리키고 있던
-                    5초 관측 구간 수, deviatedWindows는 그중 안내 방향의 반대쪽 CCTV에서도
+                    관측 구간 수, deviatedWindows는 그중 안내 방향의 반대쪽 CCTV에서도
                     인원이 탐지되어 이탈로 집계된 구간 수이며, deviationRate는 그 비율입니다.
 
                     CCTV는 headcount/밀집도만 보고할 뿐 개별 인원의 이동 경로를 알 수 없으므로,
