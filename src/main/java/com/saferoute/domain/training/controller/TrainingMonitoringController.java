@@ -522,7 +522,7 @@ public class TrainingMonitoringController {
                                                   {
                                                     "frameId": "3c9f7e2a-3b39-4f0a-9f0a-6a2b6b1f5a11",
                                                     "capturedAt": 1787722095000,
-                                                    "windowStart": 1787722090000,
+                                                    "windowStart": 1787722093000,
                                                     "windowEnd": 1787722095000,
                                                     "imageUrl": "https://example-bucket.s3.amazonaws.com/training/session/monitoring/CCTV_001/frame.jpg",
                                                     "urlExpiresAt": 1787725695000,
