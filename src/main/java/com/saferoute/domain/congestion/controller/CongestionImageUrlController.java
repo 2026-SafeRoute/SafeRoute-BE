@@ -49,7 +49,7 @@ public class CongestionImageUrlController {
     @Operation(
             summary = "혼잡 관측값 이미지 조회 URL 발급",
             description = """
-                    관리자 화면에서 5초 주기 혼잡 관측값(ObservationItem)에 연결된 모니터링
+                    관리자 화면에서 주기 혼잡 관측값(ObservationItem)에 연결된 모니터링
                     이미지를 열람하기 위한 S3 presigned GET URL을 발급합니다. 동작 방식은 혼잡
                     이벤트 이미지 조회 URL 발급 API와 동일하며, 대상 리소스만 관측값입니다.
 

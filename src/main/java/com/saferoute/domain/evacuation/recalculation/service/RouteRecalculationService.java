@@ -64,7 +64,7 @@ public class RouteRecalculationService {
     static final double CAUTION_WEIGHT_MULTIPLIER = 1.5;
     static final double CROWDED_WEIGHT_MULTIPLIER = 3.0;
 
-    // triggerAsync()가 실행기 큐에 밀려 있다가 너무 늦게(관측 주기 5초의 네 배 가까이) 실행되면
+    // triggerAsync()가 실행기 큐에 밀려 있다가 너무 늦게(관측 주기를 한참 넘겨) 실행되면
     // 건너뛴다 - 그 사이 같은 CCTV의 CONGESTION_ENDED가 동기로 먼저 처리돼 복구 PENDING을
     // 만들어 놨을 수 있는데, 뒤늦게 도착한 낡은 STARTED/LEVEL_UP이 그 복구를 취소하고 이미
     // 끝난 혼잡 기준으로 다시 우회 PENDING을 만들어버리면 안 되기 때문이다.
@@ -239,7 +239,7 @@ public class RouteRecalculationService {
         return Optional.of(merged);
     }
 
-    // trigger()의 비동기 버전 (#250). STARTED/LEVEL_UP은 Pi가 5초마다 보내는 관측값이 혼잡이
+    // trigger()의 비동기 버전 (#250). STARTED/LEVEL_UP은 Pi가 관측 주기마다 보내는 관측값이 혼잡이
     // 지속되는 동안 반복 재시도해주므로, 디바이스 응답 경로에서 TrainingSession 행 락 대기와
     // 경로탐색을 떼어내도 한 번 실패해도 다음 관측값이 자연히 다시 트리거한다.
     //

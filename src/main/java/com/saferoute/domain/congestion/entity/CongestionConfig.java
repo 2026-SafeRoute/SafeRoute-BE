@@ -88,7 +88,7 @@ public class CongestionConfig {
 
     // 문서(2.2, 2.3절)에 명시된 기본값으로 최초 1회 생성되는 설정.
     public static CongestionConfig createDefault() {
-        return new CongestionConfig(5, 5, 2.0, 3.0, 5.0, 3, 5, 30, 15);
+        return new CongestionConfig(2, 5, 2.0, 3.0, 5.0, 3, 5, 30, 15);
     }
 
     // CCTV 감시 영역(GridCell) 변경처럼 이 엔티티의 필드는 그대로지만

@@ -20,7 +20,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-@Tag(name = "혼잡도", description = "Pi 5초 관측값 수신 API")
+@Tag(name = "혼잡도", description = "Pi 주기 관측값 수신 API")
 @RestController
 @RequestMapping("/api/v1/device/congestion-observations")
 @RequiredArgsConstructor
@@ -30,9 +30,9 @@ public class CongestionObservationController {
     private final CongestionObservationService congestionObservationService;
 
     @Operation(
-            summary = "5초 관측값 수신",
+            summary = "주기 관측값 수신",
             description = """
-                    Pi가 5초 주기로 보내는 혼잡 관측값(평균/최대 인원, 이미지 Snapshot 인원,
+                    Pi가 snapshotIntervalSec 주기(기본 2초)로 보내는 혼잡 관측값(평균/최대 인원, 이미지 Snapshot 인원,
                     표본 수 등)을 저장합니다.
                     Pi가 보낸 avgHeadcount와 해당 CCTV의 감시 면적(GridCell 기반)으로 BE가 직접
                     density를 계산하고, 그 값을 congestionThresholds 기준으로 판정한 congestionLevel을

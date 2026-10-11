@@ -257,7 +257,7 @@ public class RouteDeviationService {
         List<LightDirectionEventItem> directionEvents = lightDirectionEventRepository
                 .findAllBySessionIdAndLightCode(session.getId().toString(), light.getCode());
 
-        // windowStart(5초 관측 구간의 시작 시각) 기준으로 좌/우 CCTV 결과를 먼저 합산한다.
+        // windowStart(관측 구간의 시작 시각) 기준으로 좌/우 CCTV 결과를 먼저 합산한다.
         // 같은 구간을 좌/우 CCTV 레코드 각각으로 두 번 집계하지 않기 위함이다.
         Map<Long, WindowHeadcount> windows = new TreeMap<>();
         for (String cctvCode : union(leftCctvCodes, rightCctvCodes)) {

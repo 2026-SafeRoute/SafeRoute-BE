@@ -112,7 +112,7 @@ public class TrainingMonitoringService {
     }
 
     // 상태가 아직 없는 CCTV도 목록에서 누락하지 않고 stale=true인 null 상태로 반환한다.
-    // 기준 데이터가 5초 주기 Observation이므로, 마지막 관측 이후 stateStaleAfterSec가 지났으면
+    // 기준 데이터가 주기 Observation이므로, 마지막 관측 이후 stateStaleAfterSec가 지났으면
     // congestionLevel 등이 남아있어도 stale=true로 표시해 "오래된 정보를 NORMAL로 오인"하는 것을 막는다.
     public CurrentCctvStateListResponse getCurrentStates(UUID sessionId, String email) {
         TrainingSession session = findSessionForSchool(sessionId, email);
@@ -187,7 +187,7 @@ public class TrainingMonitoringService {
 
     // 혼잡 감지 이벤트(CongestionEventItem), 경로 재탐색 이벤트(RouteRecalculation), 일반 모니터링
     // 이벤트(GeneralMonitoringEventItem - AI 분석 시작/경로 이탈 감지)를 발생 시각 최신순으로 합쳐
-    // 커서 페이지네이션한다. 관측값(ObservationItem)은 5초 주기 스냅샷이라 타임라인에 넣으면 너무
+    // 커서 페이지네이션한다. 관측값(ObservationItem)은 짧은 주기 스냅샷이라 타임라인에 넣으면 너무
     // 촘촘해져서 제외한다 - "이벤트"로 부를 만한 것들만 대상으로 한다. 재탐색 한 건은 요청 시점과
     // (있다면) 해소 시점 두 항목으로 나뉠 수 있다.
     //

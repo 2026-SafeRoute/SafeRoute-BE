@@ -72,7 +72,7 @@ class TrainingMonitoringControllerTest {
                 1_787_722_000_000L,
                 null,
                 95L,
-                5,
+                2,
                 15
         );
         given(trainingMonitoringService.getContext(SESSION_ID, EMAIL)).willReturn(context);
@@ -89,7 +89,7 @@ class TrainingMonitoringControllerTest {
                 .andExpect(jsonPath("$.result.startedAt").value(1_787_722_000_000L))
                 .andExpect(jsonPath("$.result.endedAt").value((Object) null))
                 .andExpect(jsonPath("$.result.elapsedSeconds").value(95))
-                .andExpect(jsonPath("$.result.snapshotIntervalSec").value(5))
+                .andExpect(jsonPath("$.result.snapshotIntervalSec").value(2))
                 .andExpect(jsonPath("$.result.stateStaleAfterSec").value(15));
     }
 

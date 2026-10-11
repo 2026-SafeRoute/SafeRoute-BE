@@ -23,7 +23,7 @@ public class CurrentCctvStateItem {
     public CurrentCctvStateItem() {
     }
 
-    // 기준 데이터는 5초 주기 Observation으로 통일한다 - 즉시 혼잡 이벤트(CongestionEventService)는
+    // 기준 데이터는 주기 Observation으로 통일한다 - 즉시 혼잡 이벤트(CongestionEventService)는
     // 더 이상 이 아이템을 직접 갱신하지 않는다 (이벤트 타임라인/재탐색 트리거/WebSocket 알림 용도로만 쓰임).
     public static CurrentCctvStateItem create(
             UUID trainingSessionId,
