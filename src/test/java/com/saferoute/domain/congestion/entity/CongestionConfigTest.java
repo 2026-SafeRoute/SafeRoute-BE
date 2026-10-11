@@ -14,7 +14,7 @@ class CongestionConfigTest {
 
         assertThat(config.getId()).isEqualTo(CongestionConfig.SINGLETON_ID);
         assertThat(config.getVersion()).isEqualTo(1L);
-        assertThat(config.getSnapshotIntervalSec()).isEqualTo(2);
+        assertThat(config.getSnapshotIntervalSec()).isEqualTo(1);
         assertThat(config.getTargetInferenceFps()).isEqualTo(5);
         assertThat(config.getCautionFrom()).isEqualTo(2.0);
         assertThat(config.getCrowdedFrom()).isEqualTo(3.0);

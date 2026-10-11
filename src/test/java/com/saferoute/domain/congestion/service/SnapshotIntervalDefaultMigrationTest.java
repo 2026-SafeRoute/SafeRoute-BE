@@ -9,6 +9,8 @@ import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -22,17 +24,18 @@ class SnapshotIntervalDefaultMigrationTest {
     @InjectMocks
     private SnapshotIntervalDefaultMigration migration;
 
-    @Test
-    @DisplayName("기존 설정의 관측 주기가 이전 기본값(5초)이면 2초로 바꾸고 version만 올린다")
-    void run_withPreviousDefault_updatesIntervalAndVersionOnly() {
-        CongestionConfig config = configWithInterval(5);
+    @ParameterizedTest
+    @ValueSource(ints = {5, 2})
+    @DisplayName("기존 설정의 관측 주기가 이전 기본값(5초, 2초)이면 1초로 바꾸고 version만 올린다")
+    void run_withPreviousDefault_updatesIntervalAndVersionOnly(int previousDefaultSec) {
+        CongestionConfig config = configWithInterval(previousDefaultSec);
         long versionBefore = config.getVersion();
         given(congestionConfigRepository.findById(CongestionConfig.SINGLETON_ID)).willReturn(Optional.of(config));
 
         migration.run(null);
 
         CongestionConfig defaults = CongestionConfig.createDefault();
-        assertThat(config.getSnapshotIntervalSec()).isEqualTo(2);
+        assertThat(config.getSnapshotIntervalSec()).isEqualTo(1);
         assertThat(config.getVersion()).isEqualTo(versionBefore + 1);
         assertThat(config.getTargetInferenceFps()).isEqualTo(defaults.getTargetInferenceFps());
         assertThat(config.getCautionFrom()).isEqualTo(defaults.getCautionFrom());
@@ -55,6 +58,18 @@ class SnapshotIntervalDefaultMigrationTest {
 
         assertThat(config.getSnapshotIntervalSec()).isEqualTo(3);
         assertThat(config.getVersion()).isEqualTo(versionBefore);
+    }
+
+    @Test
+    @DisplayName("관측 주기가 이미 새 기본값(1초)이면 version을 올리지 않는다")
+    void run_withNewDefault_keepsVersion() {
+        CongestionConfig config = CongestionConfig.createDefault();
+        given(congestionConfigRepository.findById(CongestionConfig.SINGLETON_ID)).willReturn(Optional.of(config));
+
+        migration.run(null);
+
+        assertThat(config.getSnapshotIntervalSec()).isEqualTo(1);
+        assertThat(config.getVersion()).isEqualTo(1L);
     }
 
     @Test

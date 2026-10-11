@@ -98,7 +98,7 @@ class CongestionConfigQueryServiceTest {
         assertThat(response.cctvCode()).isEqualTo("CCTV_001");
         assertThat(response.monitoredAreaM2()).isEqualTo(2.0);
         assertThat(response.configVersion()).isEqualTo(1L);
-        assertThat(response.snapshotIntervalSec()).isEqualTo(2);
+        assertThat(response.snapshotIntervalSec()).isEqualTo(1);
         assertThat(response.congestionThresholds().cautionFrom()).isEqualTo(2.0);
         assertThat(response.eventDetection().cooldownSec()).isEqualTo(30);
     }
