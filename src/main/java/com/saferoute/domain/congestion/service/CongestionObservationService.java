@@ -45,7 +45,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-// Pi가 snapshotIntervalSec(기본 2초)마다 보내는 관측값을 받아 BE가 직접 밀도·혼잡 단계를 계산하고 저장한다.
+// Pi가 snapshotIntervalSec(기본 1초)마다 보내는 관측값을 받아 BE가 직접 밀도·혼잡 단계를 계산하고 저장한다.
 // 멱등 저장/처리 lease/after-commit 발행 구조는 CongestionEventService와 유사한 패턴을 쓴다.
 @Slf4j
 @Service

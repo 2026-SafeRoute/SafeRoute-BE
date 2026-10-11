@@ -15,7 +15,7 @@ public record MonitoringFrameResponse(
 
         @Schema(
                 description = "이 프레임이 속한 분석 구간의 시작 시각(Unix epoch milliseconds)",
-                example = "1787722093000"
+                example = "1787722094000"
         )
         long windowStart,
 
