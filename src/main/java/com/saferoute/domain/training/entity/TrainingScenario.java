@@ -3,6 +3,8 @@ package com.saferoute.domain.training.entity;
 import com.saferoute.domain.building.entity.Building;
 import com.saferoute.domain.evacuation.graph.entity.MapNode;
 import com.saferoute.domain.user.entity.User;
+import org.hibernate.annotations.OnDelete;
+import org.hibernate.annotations.OnDeleteAction;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EntityListeners;
@@ -78,8 +80,10 @@ public class TrainingScenario {
     private Building building;
 
     // 발화 위치를 등록하기 전에는 비어 있을 수 있다. FireZoneService가 발화 층의 START 노드를 연결한다.
+    // 도면 재업로드·초기화로 노드가 지워지면 null이 되며(SET NULL), 대피 설정을 다시 등록해야 훈련을 시작할 수 있다.
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "start_node_id")
+    @OnDelete(action = OnDeleteAction.SET_NULL)
     private MapNode startNode;
 
     // ERD 기준 admin_id (팀원 원본 코드의 user_id에서 변경)

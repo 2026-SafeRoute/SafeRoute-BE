@@ -49,19 +49,25 @@ public class IoTLight {
     @OnDelete(action = OnDeleteAction.CASCADE)
     private MapNode customNode;
 
+    // 아래 안내 설정(분기점/좌우 통로)과 배정 CCTV는 도면 재업로드·초기화·그리드 재생성으로 참조 대상이
+    // 지워지면 null이 된다(SET NULL). 하나라도 비면 isGuidanceConfigured()가 false라 안내에서 제외되고,
+    // 관리자가 다시 설정해야 한다.
     // 유도등이 방향을 결정하는 분기점 노드 (경로 설정 전에는 null)
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "decision_node_id")
+    @OnDelete(action = OnDeleteAction.SET_NULL)
     private MapNode decisionNode;
 
     // 왼쪽 유도등 ON 시 안내되는 통로 (경로 설정 전에는 null)
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "left_edge_id")
+    @OnDelete(action = OnDeleteAction.SET_NULL)
     private MapEdge leftEdge;
 
     // 오른쪽 유도등 ON 시 안내되는 통로 (경로 설정 전에는 null)
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "right_edge_id")
+    @OnDelete(action = OnDeleteAction.SET_NULL)
     private MapEdge rightEdge;
 
     @Column(name = "enabled", nullable = false)
@@ -79,6 +85,7 @@ public class IoTLight {
     // 등록 시점에는 비어있을 수 있음 - 하드웨어 배치 후 별도로 설정.
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "cctv_id")
+    @OnDelete(action = OnDeleteAction.SET_NULL)
     private Cctv cctv;
 
     @CreatedDate
