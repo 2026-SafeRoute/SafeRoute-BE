@@ -149,6 +149,32 @@ class TrainingSessionServiceTest {
         assertThat(response.getStatus()).isEqualTo(TrainingStatus.COMPLETED);
         assertThat(response.getEndedAt()).isEqualTo(endedAt);
         assertThat(response.getElapsedSeconds()).isEqualTo(endedAt.getEpochSecond() - startedAt.getEpochSecond());
+        assertThat(response.getRouteBlockedAt()).isNull();
+        assertThat(response.getRouteBlockedAfterSec()).isNull();
+    }
+
+    @Test
+    @DisplayName("진행 중 세션의 경로가 막혔으면 상태 조회에 소멸 시각을 담아, 알림을 놓친 화면도 복원할 수 있다")
+    void getTrainingStatus_runningAndRouteBlocked_includesRouteBlockedAt() {
+        Building building = mock(Building.class);
+        given(building.getName()).willReturn("A동");
+        TrainingScenario scenario = mock(TrainingScenario.class);
+        given(scenario.getBuilding()).willReturn(building);
+
+        Instant startedAt = Instant.now().minus(3, ChronoUnit.MINUTES);
+        TrainingSession session = TrainingSession.create(TrainingStatus.RUNNING, startedAt, mock(User.class), scenario);
+        ReflectionTestUtils.setField(session, "id", sessionId);
+        Instant blockedAt = startedAt.plusSeconds(95);
+        session.markRouteBlocked(blockedAt);
+
+        given(trainingSessionRepository.findByIdAndScenario_Building_SchoolName(sessionId, SCHOOL_NAME))
+                .willReturn(Optional.of(session));
+
+        var response = (com.saferoute.domain.training.dto.RunningSessionResponse)
+                trainingSessionService.getTrainingStatus(sessionId, EMAIL);
+
+        assertThat(response.getRouteBlockedAt()).isEqualTo(blockedAt);
+        assertThat(response.getRouteBlockedAfterSec()).isEqualTo(95);
     }
 
     // === getSessions ===
