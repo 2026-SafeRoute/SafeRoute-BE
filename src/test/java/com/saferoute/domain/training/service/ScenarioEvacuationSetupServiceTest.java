@@ -247,23 +247,9 @@ class ScenarioEvacuationSetupServiceTest {
     }
 
     @Test
-    @DisplayName("이미 발화점이 등록된 시나리오는 다시 설정할 수 없다")
-    void setup_fireOriginAlreadyConfigured_throws() {
+    @DisplayName("발화점과 startNode가 모두 설정된 시나리오는 다시 설정할 수 없다")
+    void setup_fullyConfigured_throws() {
         given(fireZoneRepository.existsByScenario_IdAndIsManualAddTrue(scenarioId)).willReturn(true);
-
-        assertThatThrownBy(() -> scenarioEvacuationSetupService.setup(scenarioId, request, EMAIL))
-                .isInstanceOf(ApiException.class)
-                .extracting(exception -> ((ApiException) exception).getErrorCode())
-                .isEqualTo(TrainingErrorCode.SCENARIO_EVACUATION_SETUP_ALREADY_EXISTS);
-
-        verify(gridCellRepository, never()).findById(any());
-        verify(scenario, never()).assignStartNode(any());
-        verify(fireZoneRepository, never()).save(any());
-    }
-
-    @Test
-    @DisplayName("이미 startNode가 설정된 시나리오는 다시 설정할 수 없다")
-    void setup_startNodeAlreadyConfigured_throws() {
         given(scenario.getStartNode()).willReturn(mock(MapNode.class));
 
         assertThatThrownBy(() -> scenarioEvacuationSetupService.setup(scenarioId, request, EMAIL))
@@ -274,6 +260,34 @@ class ScenarioEvacuationSetupServiceTest {
         verify(gridCellRepository, never()).findById(any());
         verify(scenario, never()).assignStartNode(any());
         verify(fireZoneRepository, never()).save(any());
+        verify(fireZoneRepository, never()).deleteAllByScenario_IdAndIsManualAddTrue(any());
+    }
+
+    @Test
+    @DisplayName("도면 변경으로 startNode만 지워지고 발화점이 남았으면, 남은 발화점을 지우고 다시 등록한다")
+    void setup_onlyFireOriginRemains_replacesOriginAndRegisters() {
+        stubNodeFixtureDetails();
+        given(fireZoneRepository.existsByScenario_IdAndIsManualAddTrue(scenarioId)).willReturn(true);
+
+        scenarioEvacuationSetupService.setup(scenarioId, request, EMAIL);
+
+        verify(fireZoneRepository).deleteAllByScenario_IdAndIsManualAddTrue(scenarioId);
+        verify(fireZoneRepository).save(any(FireZone.class));
+        verify(scenario).assignStartNode(startNode);
+    }
+
+    @Test
+    @DisplayName("그리드 재생성으로 발화점만 지워지고 startNode가 남았으면, 다시 등록해 startNode를 교체한다")
+    void setup_onlyStartNodeRemains_registersAgain() {
+        stubNodeFixtureDetails();
+        // 발화점이 없으면 startNode는 확인할 필요 없이 재등록을 허용하므로(서비스가 읽지 않음) lenient로 둔다.
+        lenient().when(scenario.getStartNode()).thenReturn(mock(MapNode.class));
+
+        scenarioEvacuationSetupService.setup(scenarioId, request, EMAIL);
+
+        verify(fireZoneRepository, never()).deleteAllByScenario_IdAndIsManualAddTrue(any());
+        verify(fireZoneRepository).save(any(FireZone.class));
+        verify(scenario).assignStartNode(startNode);
     }
 
     @Test

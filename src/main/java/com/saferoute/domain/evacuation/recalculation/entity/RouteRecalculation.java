@@ -2,8 +2,11 @@ package com.saferoute.domain.evacuation.recalculation.entity;
 
 import com.saferoute.domain.congestion.entity.CongestionLevel;
 import com.saferoute.domain.evacuation.graph.entity.MapEdge;
+import com.saferoute.domain.floor.entity.Floor;
 import com.saferoute.domain.training.entity.TrainingSession;
 import com.saferoute.domain.user.entity.User;
+import org.hibernate.annotations.OnDelete;
+import org.hibernate.annotations.OnDeleteAction;
 import jakarta.persistence.CollectionTable;
 import jakarta.persistence.Column;
 import jakarta.persistence.ElementCollection;
@@ -46,10 +49,22 @@ public class RouteRecalculation {
     @JoinColumn(name = "training_session_id", nullable = false)
     private TrainingSession trainingSession;
 
-    // 혼잡이 감지되어 이번 재탐색을 트리거한 엣지
+    // 혼잡이 감지되어(또는 화재가 번져) 이번 재탐색을 트리거한 엣지. 도면 재업로드·초기화로 그래프가
+    // 교체되면 엣지는 지워지고 이 참조만 null이 된다 - 훈련 이력은 남겨야 하므로 기록 자체는 지우지 않는다.
+    // 층 정보는 엣지가 사라져도 남도록 floorId/floorNum에 따로 저장한다.
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "trigger_edge_id", nullable = false)
+    @JoinColumn(name = "trigger_edge_id")
+    @OnDelete(action = OnDeleteAction.SET_NULL)
     private MapEdge triggerEdge;
+
+    // 트리거 엣지가 속한 층. 엣지가 지워져도(위 참고) 이력 조회·승인 검증에 층 정보가 필요해 생성 시점에
+    // 복사해 둔다. 층 자체가 삭제돼도 이력이 남도록 FK 없이 값만 저장한다.
+    // 이 컬럼이 생기기 전에 만들어진 행은 null일 수 있으므로 읽을 때는 resolvedFloorId()/resolvedFloorNum()을 쓴다.
+    @Column(name = "floor_id")
+    private UUID floorId;
+
+    @Column(name = "floor_num")
+    private Integer floorNum;
 
     // 트리거를 발생시킨 CCTV. FIRE_SPREAD 트리거는 CCTV와 무관하므로 null.
     @Column(name = "cctv_code", length = 50)
@@ -122,6 +137,9 @@ public class RouteRecalculation {
             List<UUID> recalculatedNodeIds, double totalWeight) {
         this.trainingSession = trainingSession;
         this.triggerEdge = triggerEdge;
+        Floor floor = triggerEdge.getFloor();
+        this.floorId = floor != null ? floor.getId() : null;
+        this.floorNum = floor != null ? floor.getFloorNum() : null;
         this.cctvCode = cctvCode;
         this.triggerType = triggerType;
         this.congestionLevel = congestionLevel;
@@ -148,6 +166,26 @@ public class RouteRecalculation {
             List<UUID> recalculatedNodeIds, double totalWeight) {
         return new RouteRecalculation(trainingSession, triggerEdge, null, RecalculationTriggerType.FIRE_SPREAD, null,
                 0.0, previousNodeIds, previousTotalWeight, recalculatedNodeIds, totalWeight);
+    }
+
+    // floor_id가 추가되기 전 행은 아직 남아 있는 트리거 엣지에서 층을 구한다. 둘 다 없으면(옛 행인데 엣지까지
+    // 지워진 경우) null이다.
+    public UUID resolvedFloorId() {
+        if (floorId != null) {
+            return floorId;
+        }
+        return triggerEdge != null ? triggerEdge.getFloor().getId() : null;
+    }
+
+    public Integer resolvedFloorNum() {
+        if (floorNum != null) {
+            return floorNum;
+        }
+        return triggerEdge != null ? triggerEdge.getFloor().getFloorNum() : null;
+    }
+
+    public UUID triggerEdgeIdOrNull() {
+        return triggerEdge != null ? triggerEdge.getId() : null;
     }
 
     // 상태 전이 검증은 이 엔티티가 아니라 RouteRecalculationService가 담당한다

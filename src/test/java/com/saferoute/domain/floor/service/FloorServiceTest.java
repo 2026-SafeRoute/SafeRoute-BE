@@ -75,6 +75,9 @@ class FloorServiceTest {
     @Mock
     private MapEdgeJpaRepository mapEdgeRepository;
 
+    @Mock
+    private FloorMapChangeGuard floorMapChangeGuard;
+
     @Test
     void hidesFloorsOfBuildingFromAnotherSchool() {
         UUID buildingId = UUID.randomUUID();

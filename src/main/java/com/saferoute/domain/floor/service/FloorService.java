@@ -42,6 +42,7 @@ public class FloorService {
     private final SchoolContextService schoolContextService;
     private final MapNodeJpaRepository mapNodeRepository;
     private final MapEdgeJpaRepository mapEdgeRepository;
+    private final FloorMapChangeGuard floorMapChangeGuard;
 
     public List<FloorResponse> getFloors(UUID buildingId, String email) {
         findBuilding(buildingId, email);
@@ -72,6 +73,7 @@ public class FloorService {
     @Transactional
     public FloorResponse uploadFloor(UUID buildingId, UploadFloorRequest request, String email){
         Building building = findBuilding(buildingId, email);
+        floorMapChangeGuard.validateNoRunningTraining(building.getId());
         Floor floor = floorRepository.findByBuilding_IdAndFloorNum(building.getId(), request.floorNum())
             .orElseThrow(() ->
                 new ApiException(FloorErrorCode.FLOOR_NOT_FOUND)
@@ -107,6 +109,10 @@ public class FloorService {
 
     public void requestAnalysis(UUID floorId, String email) {
         String schoolName = schoolContextService.getSchoolName(email);
+        // 분석 결과 반영이 기존 그래프를 지우고 새로 만들므로, 비동기 분석을 시작하기 전에 막는다.
+        // 층이 없거나 다른 기관이면 아래 markAsProcessing이 기존대로 FLOOR_NOT_FOUND를 던진다.
+        floorRepository.findByIdAndBuilding_SchoolName(floorId, schoolName)
+                .ifPresent(floor -> floorMapChangeGuard.validateNoRunningTraining(floor.getBuilding().getId()));
         floorAnalysisStatusService.markAsProcessing(floorId, schoolName);
         floorAnalysisService.analyzeFloor(floorId);
     }
@@ -139,6 +145,7 @@ public class FloorService {
     @Transactional
     public FloorResponse clearFloorMap(UUID buildingId, UUID floorId, String email) {
         Floor floor = findFloor(buildingId, floorId, email);
+        floorMapChangeGuard.validateNoRunningTraining(floor.getBuilding().getId());
 
         if (floor.getSegmentationStatus() == SegmentationStatus.PROCESSING) {
             throw new ApiException(AnalysisErrorCode.ANALYSIS_ALREADY_IN_PROGRESS);

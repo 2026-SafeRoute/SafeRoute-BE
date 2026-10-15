@@ -5,7 +5,6 @@ import com.saferoute.domain.congestion.entity.DensityUnit;
 import com.saferoute.domain.evacuation.recalculation.entity.RecalculationStatus;
 import com.saferoute.domain.evacuation.recalculation.entity.RecalculationTriggerType;
 import com.saferoute.domain.evacuation.recalculation.entity.RouteRecalculation;
-import com.saferoute.domain.floor.entity.Floor;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -37,15 +36,16 @@ public record RouteRecalculationDetailResponse(
     }
 
     public static RouteRecalculationDetailResponse from(RouteRecalculation recalculation) {
-        Floor floor = recalculation.getTriggerEdge().getFloor();
+        // 도면이 교체돼 트리거 엣지가 지워졌어도 이력은 조회돼야 하므로 층은 기록에 저장된 값을 쓴다.
+        Integer floorNum = recalculation.resolvedFloorNum();
         return new RouteRecalculationDetailResponse(
                 recalculation.getId(),
                 recalculation.getTrainingSession().getId(),
-                floor.getId(),
-                floor.getFloorNum(),
-                floor.getFloorNum() + "층",
+                recalculation.resolvedFloorId(),
+                floorNum,
+                floorNum != null ? floorNum + "층" : null,
                 recalculation.getCctvCode(),
-                recalculation.getTriggerEdge().getId(),
+                recalculation.triggerEdgeIdOrNull(),
                 recalculation.getTriggerType(),
                 recalculation.getCongestionLevel(),
                 recalculation.getDensity(),

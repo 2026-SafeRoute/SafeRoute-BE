@@ -19,6 +19,7 @@ import com.saferoute.domain.evacuation.graph.repository.MapNodeJpaRepository;
 import com.saferoute.domain.floor.entity.Floor;
 import com.saferoute.domain.floor.entity.SegmentationStatus;
 import com.saferoute.domain.floor.repository.FloorRepository;
+import com.saferoute.domain.floor.service.FloorMapChangeGuard;
 import com.saferoute.global.api.error.FloorErrorCode;
 import com.saferoute.global.api.error.GridErrorCode;
 import com.saferoute.global.api.exception.ApiException;
@@ -48,6 +49,7 @@ public class FloorGridService {
     private final MapNodeJpaRepository mapNodeRepository;
     private final MapEdgeJpaRepository mapEdgeRepository;
     private final SchoolContextService schoolContextService;
+    private final FloorMapChangeGuard floorMapChangeGuard;
 
     public FloorGridCellPageResponse getGridCells(UUID floorId, int page, int size) {
         Floor floor = floorRepository.findById(floorId)
@@ -91,6 +93,7 @@ public class FloorGridService {
                 .orElseThrow(() -> new ApiException(FloorErrorCode.FLOOR_NOT_FOUND));
 
         validateFloorReady(floor);
+        floorMapChangeGuard.validateNoRunningTraining(floor.getBuilding().getId());
 
         double cellSizeMeter = request.cellSizeInMeters();
         validateCellSize(cellSizeMeter);

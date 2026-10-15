@@ -45,6 +45,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.hibernate.Hibernate;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -470,7 +471,7 @@ public class RouteRecalculationService {
     // trigger()/triggerForFireSpread() 호출 이후에도 화재가 더 번질 수 있어, 승인 직전에
     // 한 번 더 검증하지 않으면 관리자가 화재 통과 경로를 승인해버릴 수 있다.
     private boolean crossesCurrentFire(RouteRecalculation recalculation) {
-        UUID floorId = recalculation.getTriggerEdge().getFloor().getId();
+        UUID floorId = recalculation.resolvedFloorId();
         UUID scenarioId = recalculation.getTrainingSession().getScenario().getId();
         return crossesAnyEdge(recalculation.getRecalculatedNodeIds(), firedEdgesForFloor(scenarioId, floorId));
     }
@@ -673,6 +674,10 @@ public class RouteRecalculationService {
 
     private void cancel(RouteRecalculation recalculation, String reason) {
         recalculation.cancel(Instant.now(), reason);
+        // 취소 이벤트 데이터(RouteRecalculationEventData)는 커밋 후 콜백에서 만들어지는데, 그때 지연 로딩
+        // 컬렉션(recalculatedNodeIds)을 처음 읽게 되면 트랜잭션 밖 지연 로딩에 기대게 된다. 이 경로에서
+        // 아직 한 번도 읽지 않았을 수 있으므로(예: 도면 변경으로 무효화) 트랜잭션 안에서 미리 초기화한다.
+        Hibernate.initialize(recalculation.getRecalculatedNodeIds());
         trainingEventPublisher.publishRouteRecalculationCancelledAfterCommit(recalculation);
     }
 
@@ -732,7 +737,7 @@ public class RouteRecalculationService {
                     sessionId,
                     scenario.getId(),
                     scenario.getBuildingId(),
-                    approved.getTriggerEdge().getFloor().getId(),
+                    approved.resolvedFloorId(),
                     startNodeId,
                     CurrentRouteResponse.RouteSource.RECALCULATED,
                     path,
@@ -774,8 +779,10 @@ public class RouteRecalculationService {
     private List<CurrentRouteResponse.NodePoint> toNodePoints(List<UUID> nodeIds) {
         Map<UUID, MapNode> nodesById = mapNodeJpaRepository.findAllById(nodeIds).stream()
                 .collect(Collectors.toMap(MapNode::getId, node -> node));
+        // 도면 재업로드·초기화로 지워진 노드는 id만 남아 있으므로 건너뛴다(그대로 넘기면 NodePoint.from(null)에서 NPE).
         return nodeIds.stream()
                 .map(nodesById::get)
+                .filter(Objects::nonNull)
                 .map(CurrentRouteResponse.NodePoint::from)
                 .toList();
     }
@@ -797,6 +804,13 @@ public class RouteRecalculationService {
                 .findByIdAndTrainingSession_Scenario_Building_SchoolName(recalculationId, schoolName)
                 .orElseThrow(() -> new ApiException(EvacuationErrorCode.ROUTE_RECALCULATION_NOT_FOUND));
         validatePending(recalculation);
+        if (recalculation.getTriggerEdge() == null) {
+            // 트리거 엣지가 지워졌다는 건 도면이 재업로드·초기화돼 그래프가 바뀌었다는 뜻이라, 후보 경로의 노드도
+            // 더 이상 존재하지 않는다. 승인해도 안내할 수 없으므로 무효화하고 거부한다 (위 화재 통과 거부와 같은 이유로
+            // 무효화를 함께 커밋한다 - noRollbackFor = ApiException).
+            cancel(recalculation, "도면 변경으로 무효화됨");
+            throw new ApiException(EvacuationErrorCode.ROUTE_RECALCULATION_GRAPH_CHANGED);
+        }
         if (crossesCurrentFire(recalculation)) {
             // 승인 거부로 끝내면 이 PENDING은 화재가 다시 번지기 전까지(=triggerForFireSpread가
             // 다시 호출되기 전까지) 아무도 정리해주지 않아 승인 대기 목록에 그대로 남는다.
@@ -827,7 +841,7 @@ public class RouteRecalculationService {
     // approve()는 noRollbackFor = ApiException이라 여기서 예외가 나면 승인이 반쯤 커밋된 상태로 남을
     // 수 있다. 다음 홉은 부가 정보일 뿐이므로 계산이 실패하면 승인 경로만 반영하도록 흡수한다.
     private void applyApprovedRouteGuidance(UUID sessionId, RouteRecalculation recalculation) {
-        UUID floorId = recalculation.getTriggerEdge().getFloor().getId();
+        UUID floorId = recalculation.resolvedFloorId();
         Map<UUID, UUID> nextHops;
         try {
             Set<UUID> excludedEdgeIds = firedEdgeIdsForFloor(
