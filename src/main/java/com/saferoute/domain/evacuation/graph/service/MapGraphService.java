@@ -13,6 +13,7 @@ import com.saferoute.domain.evacuation.graph.repository.MapGraphRepository;
 import com.saferoute.domain.evacuation.grid.service.FloorGridService;
 import com.saferoute.domain.floor.entity.Floor;
 import com.saferoute.domain.floor.repository.FloorRepository;
+import com.saferoute.domain.floor.service.FloorMapChangeGuard;
 import com.saferoute.global.api.error.EvacuationErrorCode;
 import com.saferoute.global.api.error.FloorErrorCode;
 import com.saferoute.global.api.exception.ApiException;
@@ -32,6 +33,7 @@ public class MapGraphService {
     private final FloorRepository floorRepository;
     private final SchoolContextService schoolContextService;
     private final FloorGridService floorGridService;
+    private final FloorMapChangeGuard floorMapChangeGuard;
 
     // 커스텀 편집 UI 초기 로딩용 - 층의 노드/엣지 전체 조회
     public FloorGraphResponse getFloorGraph(UUID floorId) {
@@ -60,6 +62,7 @@ public class MapGraphService {
     public MapNodeResponse createNode(UUID floorId, CreateMapNodeRequest request) {
         Floor floor = floorRepository.findById(floorId)
                 .orElseThrow(() -> new ApiException(FloorErrorCode.FLOOR_NOT_FOUND));
+        validateNoRunningTraining(floor);
         boolean isExitTarget = resolveExitTarget(request.type(), request.isExitTarget());
         MapNode node = mapGraphRepository.addNode(floor, request.code(), request.type(), request.name(),
                 request.x(), request.y(), isExitTarget);
@@ -78,6 +81,7 @@ public class MapGraphService {
                     .orElseThrow(() -> new ApiException(FloorErrorCode.FLOOR_NOT_FOUND));
             validateNotLastExitNode(node, EvacuationErrorCode.EXIT_NODE_UNSET_NOT_ALLOWED);
         }
+        validateNoRunningTraining(node.getFloor());
         node.changeType(nextType);
         MapNode updated = mapGraphRepository.updateNodePosition(
                 node, request.x(), request.y(), nextExitTarget);
@@ -96,6 +100,7 @@ public class MapGraphService {
         if (node.getType() != NodeType.DOOR) {
             throw new ApiException(EvacuationErrorCode.START_CANDIDATE_ONLY_FOR_DOOR);
         }
+        validateNoRunningTraining(node.getFloor());
         MapNode updated = mapGraphRepository.updateStartCandidate(node, isStartCandidate);
         return MapNodeResponse.from(updated);
     }
@@ -117,6 +122,7 @@ public class MapGraphService {
         // 동일 층에 대한 동시 삭제 요청을 직렬화해 마지막 EXIT 카운트 검증과 삭제 사이의 경쟁을 방지
         floorRepository.findByIdForUpdate(node.getFloor().getId())
                 .orElseThrow(() -> new ApiException(FloorErrorCode.FLOOR_NOT_FOUND));
+        validateNoRunningTraining(node.getFloor());
         validateNotLastExitNode(node, EvacuationErrorCode.EXIT_NODE_DELETE_NOT_ALLOWED);
         mapGraphRepository.deleteNode(node);
     }
@@ -138,6 +144,7 @@ public class MapGraphService {
     public MapEdgeResponse createEdge(CreateMapEdgeRequest request) {
         MapNode fromNode = findNodeOrThrow(request.fromNodeId());
         MapNode toNode = findNodeOrThrow(request.toNodeId());
+        validateNoRunningTraining(fromNode.getFloor());
         MapEdge edge = mapGraphRepository.addEdge(
                 fromNode.getFloor(), fromNode, toNode, request.distance(), request.bidirectional());
         // 그리드가 이미 생성된 층이면 새 엣지도 바로 grid cell에 매핑해둔다 - 안 그러면 그리드를
@@ -151,7 +158,15 @@ public class MapGraphService {
     public void deleteEdge(UUID edgeId) {
         MapEdge edge = mapGraphRepository.findEdgeById(edgeId)
                 .orElseThrow(() -> new ApiException(EvacuationErrorCode.MAP_EDGE_NOT_FOUND));
+        validateNoRunningTraining(edge.getFloor());
         mapGraphRepository.deleteEdge(edge);
+    }
+
+    // 훈련 중 그래프가 바뀌면 안내 중인 경로·유도등 분기점·화재 구간 매핑이 어긋난다. 도면 재업로드·초기화와 같은
+    // 기준(FloorMapChangeGuard)으로 막는다. 층 행을 잠그는 메서드에서는 그 뒤에 호출해 다른 경로(분석 반영,
+    // 그리드 재생성)와 같은 "층 -> 건물" 잠금 순서를 지킨다.
+    private void validateNoRunningTraining(Floor floor) {
+        floorMapChangeGuard.validateNoRunningTraining(floor.getBuilding().getId());
     }
 
     private MapNode findNodeOrThrow(UUID nodeId) {

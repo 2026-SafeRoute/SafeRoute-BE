@@ -24,6 +24,8 @@ import com.saferoute.domain.evacuation.graph.entity.NodeType;
 import com.saferoute.domain.evacuation.graph.repository.MapGraphRepository;
 import com.saferoute.domain.evacuation.grid.service.FloorGridService;
 import com.saferoute.domain.floor.entity.Floor;
+import com.saferoute.domain.floor.service.FloorMapChangeGuard;
+import com.saferoute.domain.building.entity.Building;
 import com.saferoute.domain.floor.repository.FloorRepository;
 import com.saferoute.domain.user.service.SchoolContextService;
 import com.saferoute.global.api.error.EvacuationErrorCode;
@@ -62,13 +64,54 @@ class MapGraphServiceTest {
     @Mock
     private FloorGridService floorGridService;
 
+    @Mock
+    private FloorMapChangeGuard floorMapChangeGuard;
+
     private final UUID floorId = UUID.randomUUID();
+    private final UUID buildingId = UUID.randomUUID();
     private Floor floor;
 
     @BeforeEach
     void setUp() {
         floor = mock(Floor.class);
         lenient().when(floor.getId()).thenReturn(floorId);
+        Building building = mock(Building.class);
+        lenient().when(building.getId()).thenReturn(buildingId);
+        lenient().when(floor.getBuilding()).thenReturn(building);
+    }
+
+    // === 훈련 중 편집 차단 ===
+
+    @Test
+    @DisplayName("훈련이 진행 중인 건물이면 엣지를 삭제하지 않고 FLOOR004를 던진다")
+    void deleteEdge_whileTrainingRunning_throwsAndKeepsEdge() {
+        MapEdge edge = MapEdge.create(floor, createNode("A", NodeType.HALLWAY), createNode("B", NodeType.HALLWAY), 3.0, true);
+        UUID edgeId = UUID.randomUUID();
+        given(mapGraphRepository.findEdgeById(edgeId)).willReturn(Optional.of(edge));
+        org.mockito.BDDMockito.willThrow(new ApiException(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING))
+                .given(floorMapChangeGuard).validateNoRunningTraining(buildingId);
+
+        assertThatThrownBy(() -> mapGraphService.deleteEdge(edgeId))
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).getErrorCode())
+                .isEqualTo(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING);
+        org.mockito.Mockito.verify(mapGraphRepository, org.mockito.Mockito.never()).deleteEdge(any());
+    }
+
+    @Test
+    @DisplayName("훈련이 진행 중인 건물이면 노드를 삭제하지 않고 FLOOR004를 던진다")
+    void deleteNode_whileTrainingRunning_throwsAndKeepsNode() {
+        MapNode node = createNode("HALL", NodeType.HALLWAY);
+        given(mapGraphRepository.findNodeById(node.getId())).willReturn(Optional.of(node));
+        given(floorRepository.findByIdForUpdate(floorId)).willReturn(Optional.of(floor));
+        org.mockito.BDDMockito.willThrow(new ApiException(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING))
+                .given(floorMapChangeGuard).validateNoRunningTraining(buildingId);
+
+        assertThatThrownBy(() -> mapGraphService.deleteNode(node.getId()))
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).getErrorCode())
+                .isEqualTo(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING);
+        org.mockito.Mockito.verify(mapGraphRepository, org.mockito.Mockito.never()).deleteNode(any());
     }
 
     private MapNode createNode(String code, NodeType type) {
