@@ -10,6 +10,7 @@ import com.saferoute.domain.evacuation.grid.service.FloorGridService;
 import com.saferoute.domain.floor.entity.Floor;
 import com.saferoute.domain.floor.entity.SegmentationStatus;
 import com.saferoute.domain.floor.repository.FloorRepository;
+import com.saferoute.domain.floor.service.FloorMapChangeGuard;
 import com.saferoute.global.api.error.AnalysisErrorCode;
 import com.saferoute.global.api.error.FloorErrorCode;
 import com.saferoute.global.api.exception.ApiException;
@@ -30,11 +31,16 @@ public class FloorAnalysisResultService {
     private final MapNodeJpaRepository mapNodeRepository;
     private final MapEdgeJpaRepository mapEdgeRepository;
     private final FloorGridService floorGridService;
+    private final FloorMapChangeGuard floorMapChangeGuard;
 
     @Transactional
     public void persistAnalysisResult(UUID floorId, AnalyseFloorResponse response) {
         Floor floor = floorRepository.findByIdForUpdate(floorId)
                 .orElseThrow(() -> new ApiException(FloorErrorCode.FLOOR_NOT_FOUND));
+        // 분석 요청 시점의 사전 검사(FloorService.requestAnalysis)만으로는 부족하다 - AI 분석이 도는 동안 훈련이
+        // 시작될 수 있으므로, 실제로 그래프를 교체하는 이 시점에 다시 검사한다. 막히면 예외로 롤백되고
+        // FloorAnalysisService가 분석을 FAILED로 표시한다.
+        floorMapChangeGuard.validateNoRunningTraining(floor.getBuilding().getId());
 
         validateGraphIntegrity(response);
         replaceExistingGraph(floor);

@@ -6,6 +6,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 
+import com.saferoute.domain.analysis.dto.AnalyseFloorResponse;
+import com.saferoute.domain.analysis.service.FloorAnalysisResultService;
 import com.saferoute.domain.building.entity.Building;
 import com.saferoute.domain.building.entity.BuildingType;
 import com.saferoute.domain.building.repository.BuildingRepository;
@@ -41,6 +43,7 @@ import com.saferoute.infrastructure.s3.dto.S3UploadResponse;
 import com.saferoute.infrastructure.s3.service.S3Service;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -82,6 +85,9 @@ class FloorGraphReplacementIntegrationTest {
     @Autowired
     private TransactionTemplate transactionTemplate;
 
+    @Autowired
+    private FloorAnalysisResultService floorAnalysisResultService;
+
     @MockitoBean
     private S3Service s3Service;
 
@@ -117,12 +123,7 @@ class FloorGraphReplacementIntegrationTest {
     void clearFloorMap_whileTrainingRunningInBuilding_isRejectedAndGraphKept() {
         Fixture fixture = transactionTemplate.execute(status -> {
             Fixture created = createFloorWithTrainingHistory("running");
-            Building building = buildingRepository.findById(created.buildingId()).orElseThrow();
-            User admin = userRepository.findByEmail(created.email()).orElseThrow();
-            TrainingScenario another = trainingScenarioRepository.save(TrainingScenario.create(
-                    "진행 중 시나리오", 10, Instant.now(), false, FireSpreadSpeed.FAST, building, admin, null));
-            trainingSessionRepository.save(TrainingSession.create(
-                    TrainingStatus.RUNNING, Instant.now().minusSeconds(30), admin, another));
+            startAnotherTraining(created);
             return created;
         });
 
@@ -132,6 +133,34 @@ class FloorGraphReplacementIntegrationTest {
                 .isEqualTo(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING);
 
         assertThat(mapEdgeRepository.findAllByFloor_Id(fixture.floorId())).isNotEmpty();
+    }
+
+    // AI 분석은 요청 후 결과가 오기까지 시간이 걸려, 그 사이 훈련이 시작될 수 있다. 결과를 반영하는 시점에도
+    // 막혀야 진행 중인 훈련의 그래프가 교체되지 않는다.
+    @Test
+    void persistAnalysisResult_whenTrainingStartedDuringAnalysis_isRejectedAndGraphKept() {
+        Fixture fixture = transactionTemplate.execute(status -> {
+            Fixture created = createFloorWithTrainingHistory("analysis");
+            startAnotherTraining(created);
+            return created;
+        });
+        AnalyseFloorResponse emptyResult = new AnalyseFloorResponse(100, 50, List.of(), List.of(), Map.of());
+
+        assertThatThrownBy(() -> floorAnalysisResultService.persistAnalysisResult(fixture.floorId(), emptyResult))
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).getErrorCode())
+                .isEqualTo(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING);
+
+        assertThat(mapEdgeRepository.findAllByFloor_Id(fixture.floorId())).isNotEmpty();
+    }
+
+    private void startAnotherTraining(Fixture fixture) {
+        Building building = buildingRepository.findById(fixture.buildingId()).orElseThrow();
+        User admin = userRepository.findByEmail(fixture.email()).orElseThrow();
+        TrainingScenario another = trainingScenarioRepository.save(TrainingScenario.create(
+                "진행 중 시나리오", 10, Instant.now(), false, FireSpreadSpeed.FAST, building, admin, null));
+        trainingSessionRepository.save(TrainingSession.create(
+                TrainingStatus.RUNNING, Instant.now().minusSeconds(30), admin, another));
     }
 
     private void assertHistoryKeptAndReferencesDetached(Fixture fixture) {
