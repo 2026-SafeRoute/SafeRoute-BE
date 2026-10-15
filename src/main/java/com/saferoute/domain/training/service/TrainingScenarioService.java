@@ -8,6 +8,7 @@ import com.saferoute.domain.training.dto.UpdateScenarioRequest;
 import com.saferoute.domain.training.entity.ScenarioStatus;
 import com.saferoute.domain.training.entity.TrainingScenario;
 import com.saferoute.domain.report.repository.TrainingReportRepository;
+import com.saferoute.domain.training.repository.FireZoneRepository;
 import com.saferoute.domain.training.repository.TrainingScenarioRepository;
 import com.saferoute.domain.training.repository.TrainingSessionRepository;
 import com.saferoute.domain.user.entity.User;
@@ -34,6 +35,7 @@ public class TrainingScenarioService {
 
     private final TrainingScenarioRepository scenarioRepository;
     private final TrainingSessionRepository trainingSessionRepository;
+    private final FireZoneRepository fireZoneRepository;
     private final TrainingReportRepository trainingReportRepository;
     private final BuildingRepository buildingRepository;
     private final UserRepository userRepository;
@@ -141,6 +143,10 @@ public class TrainingScenarioService {
         if (trainingSessionRepository.existsByScenario_Id(id)) {
             throw new ApiException(TrainingErrorCode.SCENARIO_DELETE_NOT_ALLOWED);
         }
+        // 세션이 없다는 건 훈련이 한 번도 돌지 않았다는 뜻이라, 남아 있는 FireZone은 대피 설정의 발화점(설정값)뿐이다.
+        // fire_zones.scenario_id가 시나리오를 참조해 그대로 지우면 FK 위반이 나므로 먼저 지운다. DB FK를 CASCADE로
+        // 두지 않는 이유는, 다른 경로로 시나리오가 지워질 때 실제 훈련 기록(확산 이력)까지 조용히 지워지지 않게 하기 위함이다.
+        fireZoneRepository.deleteAllByScenario_Id(id);
         scenarioRepository.delete(scenario);
     }
 

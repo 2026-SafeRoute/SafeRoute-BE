@@ -12,6 +12,9 @@ import org.springframework.data.repository.query.Param;
 public interface FireZoneRepository extends JpaRepository<FireZone, UUID> {
     void deleteAllByFloor_Id(UUID floorId);
 
+    // 세션이 없는 시나리오를 삭제할 때 대피 설정의 발화점을 먼저 정리하기 위해 쓴다(TrainingScenarioService.deleteScenario).
+    void deleteAllByScenario_Id(UUID scenarioId);
+
     // 현재 세대(frontier)에 속한 FireZone 조회 - 다음 확산의 시작점.
     List<FireZone> findByScenario_IdAndSpreadGeneration(UUID scenarioId, int spreadGeneration);
 

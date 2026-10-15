@@ -45,6 +45,9 @@ class TrainingScenarioServiceTest {
     private static final String EMAIL = "manager@saferoute.com";
     private static final String SCHOOL_NAME = "SafeRoute School";
 
+    @Mock
+    private com.saferoute.domain.training.repository.FireZoneRepository fireZoneRepository;
+
     @InjectMocks
     private TrainingScenarioService trainingScenarioService;
 
