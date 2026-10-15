@@ -22,9 +22,14 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+// 경로 탐색은 읽기 전용이라 되돌릴 변경이 없다. 그런데 기본 설정이면 "경로 없음"(EVAC005) 같은
+// ApiException이 이 프록시를 통과하면서 호출부 트랜잭션을 rollback-only로 만들어, 호출부가 예외를
+// 잡고 정상 진행해도 커밋 시점에 UnexpectedRollbackException이 난다 - 화재 우회 재탐색은 우회 경로가
+// 없을 때 이 때문에 PENDING 무효화와 경로 소멸 기록까지 통째로 롤백되고 있었다. 그래서 ApiException은
+// 롤백 대상에서 제외한다 (computeNextHops와 같은 이유).
 @Service
 @RequiredArgsConstructor
-@Transactional(readOnly = true)
+@Transactional(readOnly = true, noRollbackFor = ApiException.class)
 public class EvacuationRouteService {
 
     // TODO: 혼잡도 가중치 계수 - DynamoDB 혼잡도 연동 인터페이스 확정 후 담당 팀원과 조율
