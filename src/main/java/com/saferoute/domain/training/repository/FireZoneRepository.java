@@ -20,6 +20,9 @@ public interface FireZoneRepository extends JpaRepository<FireZone, UUID> {
 
     boolean existsByScenario_IdAndIsManualAddTrue(UUID scenarioId);
 
+    // 대피 설정이 반쪽만 남았을 때(시작 노드가 지워짐) 남은 수동 발화점을 지우고 다시 등록하기 위해 쓴다.
+    void deleteAllByScenario_IdAndIsManualAddTrue(UUID scenarioId);
+
     // 시나리오의 전체 FireZone(수동 발화점 + 확산으로 옮겨붙은 셀) 조회 - 세대 오름차순, 같은 세대는 등록 시각 오름차순
     List<FireZone> findByScenario_IdOrderBySpreadGenerationAscAddedAtAsc(UUID scenarioId);
 

@@ -47,9 +47,15 @@ public class ScenarioEvacuationSetupService {
         if (scenario.getStatus() != ScenarioStatus.READY) {
             throw new ApiException(TrainingErrorCode.INVALID_STATUS_TRANSITION);
         }
-        if (fireZoneRepository.existsByScenario_IdAndIsManualAddTrue(scenarioId)
-                || scenario.getStartNode() != null) {
+        // 발화점과 시작 노드가 둘 다 있을 때만 "이미 설정됨"으로 막는다. 도면 재업로드·초기화(시작 노드 SET NULL)나
+        // 그리드 재생성(발화점 셀 CASCADE 삭제)으로 한쪽만 사라지면, 훈련 시작도 설정 재등록도 못 하는 상태에 갇히고
+        // 설정을 지우는 API도 없다. 그래서 반쪽만 남은 경우엔 남은 발화점을 지우고 새로 등록하게 한다.
+        boolean hasOrigin = fireZoneRepository.existsByScenario_IdAndIsManualAddTrue(scenarioId);
+        if (hasOrigin && scenario.getStartNode() != null) {
             throw new ApiException(TrainingErrorCode.SCENARIO_EVACUATION_SETUP_ALREADY_EXISTS);
+        }
+        if (hasOrigin) {
+            fireZoneRepository.deleteAllByScenario_IdAndIsManualAddTrue(scenarioId);
         }
 
         FloorGridCell cell = gridCellRepository.findById(request.fireOriginGridCellId())
