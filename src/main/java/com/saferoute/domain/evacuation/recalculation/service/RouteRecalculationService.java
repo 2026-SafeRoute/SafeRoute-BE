@@ -313,7 +313,15 @@ public class RouteRecalculationService {
             return;
         }
 
-        TrainingSession lockedSession = trainingSessionRepository.findByIdForUpdate(session.getId()).orElse(session);
+        // 넘어온 session은 화재 확산 트랜잭션에서 읽은(이미 커밋된) detached 엔티티라, 여기서 바꿔도 저장되지
+        // 않는다. 락 조회에 실패했을 때 그걸로 대신 진행하면 routeBlockedAt이 남지 않아 경로 소멸 알림이
+        // 틱마다 다시 발행되므로, 세션을 찾지 못하면(=삭제됨) 할 일이 없는 것으로 보고 건너뛴다.
+        Optional<TrainingSession> locked = trainingSessionRepository.findByIdForUpdate(session.getId());
+        if (locked.isEmpty()) {
+            log.warn("화재 확산 재탐색 대상 세션을 찾을 수 없어 건너뜀: sessionId={}", session.getId());
+            return;
+        }
+        TrainingSession lockedSession = locked.get();
 
         List<RouteRecalculation> existingPending = routeRecalculationRepository
                 .findAllByTrainingSession_IdAndStatus(session.getId(), RecalculationStatus.PENDING);
