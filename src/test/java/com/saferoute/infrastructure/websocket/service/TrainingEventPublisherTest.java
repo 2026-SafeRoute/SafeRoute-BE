@@ -15,6 +15,7 @@ import com.saferoute.domain.evacuation.graph.entity.MapNode;
 import com.saferoute.domain.floor.entity.Floor;
 import com.saferoute.domain.training.entity.TrainingSession;
 import com.saferoute.domain.training.entity.TrainingStatus;
+import com.saferoute.infrastructure.websocket.dto.EvacuationRouteBlockedEventData;
 import com.saferoute.infrastructure.websocket.dto.IoTLightEventMessage;
 import com.saferoute.infrastructure.websocket.dto.IoTLightStatusEventData;
 import com.saferoute.infrastructure.websocket.dto.TrainingEventMessage;
@@ -69,6 +70,34 @@ class TrainingEventPublisherTest {
         assertThat(message.occurredAt()).isNotNull();
         assertThat(message.data()).isNotNull();
         assertThat(message.data().status()).isEqualTo(TrainingStatus.COMPLETED);
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    @DisplayName("대피 경로 소멸 알림을 세션 토픽으로 층과 소멸 시각을 담아 발행한다")
+    void publishEvacuationRouteBlocked_sendsToSessionTopicWithBlockedInfo() {
+        UUID sessionId = UUID.randomUUID();
+        UUID floorId = UUID.randomUUID();
+        Instant blockedAt = Instant.parse("2026-01-01T00:01:35Z");
+        TrainingSession session = mock(TrainingSession.class);
+        lenient().when(session.getId()).thenReturn(sessionId);
+        lenient().when(session.getRouteBlockedAt()).thenReturn(blockedAt);
+        lenient().when(session.routeBlockedAfterSec()).thenReturn(95);
+
+        publisher.publishEvacuationRouteBlocked(session, floorId);
+
+        ArgumentCaptor<String> destinationCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Object> payloadCaptor = ArgumentCaptor.forClass(Object.class);
+        verify(messagingTemplate).convertAndSend(destinationCaptor.capture(), payloadCaptor.capture());
+        assertThat(destinationCaptor.getValue()).isEqualTo("/topic/training-sessions/" + sessionId);
+
+        TrainingEventMessage<EvacuationRouteBlockedEventData> message =
+                (TrainingEventMessage<EvacuationRouteBlockedEventData>) payloadCaptor.getValue();
+        assertThat(message.eventType()).isEqualTo(TrainingEventType.EVACUATION_ROUTE_BLOCKED);
+        assertThat(message.sessionId()).isEqualTo(sessionId);
+        assertThat(message.data().floorId()).isEqualTo(floorId);
+        assertThat(message.data().blockedAt()).isEqualTo(blockedAt);
+        assertThat(message.data().blockedAfterSec()).isEqualTo(95);
     }
 
     @Test

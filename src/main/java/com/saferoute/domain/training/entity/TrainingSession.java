@@ -126,11 +126,12 @@ public class TrainingSession {
     }
 
     // 훈련 시작 후 경로가 막히기까지 걸린 초. 막힌 적이 없거나 시작 시각이 없으면 null.
-    public Long routeBlockedAfterSec() {
+    // 리포트의 다른 초 단위 지표(avgEvacuationSec)와 맞춰 Integer로 돌려준다. 훈련은 최대 10분이라 범위가 충분하다.
+    public Integer routeBlockedAfterSec() {
         if (routeBlockedAt == null || startedAt == null) {
             return null;
         }
-        return Duration.between(startedAt, routeBlockedAt).getSeconds();
+        return Math.toIntExact(Duration.between(startedAt, routeBlockedAt).getSeconds());
     }
 
     // 훈련 정상 종료

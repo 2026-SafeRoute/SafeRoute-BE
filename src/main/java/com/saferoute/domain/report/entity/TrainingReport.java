@@ -86,6 +86,11 @@ public class TrainingReport {
     @Column(name = "risk_index")
     private Double riskIndex;
 
+    // 훈련 시작부터 화재로 대피 경로가 모두 막히기까지 걸린 초. 막힌 적이 없으면 null. 점수에 반영하지 않는
+    // 참고 지표다. 다른 지표처럼 생성 시점 값을 복사해 두어, 조회할 때 세션을 다시 읽지 않는다.
+    @Column(name = "route_blocked_after_sec")
+    private Integer routeBlockedAfterSec;
+
     // 자동 평가 보고서 서술형 요약. TrainingReportNarrativeGenerator가 점수 기반 고정 템플릿으로 생성
     @Column(name="summary_text", columnDefinition = "TEXT")
     private String summaryText;
@@ -155,6 +160,7 @@ public class TrainingReport {
         this.summaryText = summaryText;
         this.recommendations = new ArrayList<>(recommendations);
         this.trainingSession = trainingSession;
+        this.routeBlockedAfterSec = trainingSession.routeBlockedAfterSec();
     }
 
     // 4개 항목(대피시간/생존률/병목/경로준수율)을 이미 갖고 있는 데이터로부터 계산한 결과로 리포트를 생성한다.

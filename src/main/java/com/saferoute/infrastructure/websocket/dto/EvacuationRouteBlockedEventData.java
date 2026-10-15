@@ -9,7 +9,7 @@ import java.util.UUID;
 public record EvacuationRouteBlockedEventData(
         UUID floorId,
         Instant blockedAt,
-        Long blockedAfterSec
+        Integer blockedAfterSec
 ) {
 
     public static EvacuationRouteBlockedEventData from(TrainingSession session, UUID floorId) {

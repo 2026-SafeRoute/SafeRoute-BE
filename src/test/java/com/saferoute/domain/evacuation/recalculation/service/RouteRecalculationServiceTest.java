@@ -883,6 +883,19 @@ class RouteRecalculationServiceTest {
     }
 
     @Test
+    @DisplayName("세션 락 조회에 실패하면 detached 세션으로 진행하지 않고 재탐색과 경로 소멸 알림을 건너뛴다")
+    void triggerForFireSpread_lockedSessionNotFound_skipsWithoutPublishing() {
+        given(trainingSessionRepository.findByIdForUpdate(session.getId())).willReturn(Optional.empty());
+
+        routeRecalculationService.triggerForFireSpread(session, List.of(triggerEdge));
+
+        verify(session, never()).markRouteBlocked(any());
+        verify(evacuationRouteService, never()).findShortestRoute(any(), any(), anySet(), any());
+        verify(trainingEventPublisher, never()).publishEvacuationRouteBlockedAfterCommit(any(), any());
+        verify(routeRecalculationRepository, never()).save(any());
+    }
+
+    @Test
     @DisplayName("현재 활성 경로가 화재 구간과 무관하면 우회 경로를 다시 계산하지 않는다")
     void triggerForFireSpread_skipsWhenActiveRouteDoesNotCrossFire() {
         // 승인된 혼잡 우회 경로 D가 활성 상태이고, 그 경로는 이번 화재 엣지(triggerEdge)와 무관하다.

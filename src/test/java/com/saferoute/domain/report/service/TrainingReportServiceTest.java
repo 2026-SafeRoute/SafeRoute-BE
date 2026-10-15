@@ -93,7 +93,6 @@ class TrainingReportServiceTest {
         String reportId = "abc123XYZ0";
         TrainingReport report = mock(TrainingReport.class);
         given(report.getShortId()).willReturn(reportId);
-        given(report.getTrainingSession()).willReturn(mock(TrainingSession.class));
         given(report.getCumulativeEvacuationPoints()).willReturn(Collections.emptyList());
         given(report.getZoneDensityPoints()).willReturn(Collections.emptyList());
         given(report.getRecentEvacuationPoints()).willReturn(Collections.emptyList());
@@ -186,6 +185,26 @@ class TrainingReportServiceTest {
         ArgumentCaptor<TrainingReport> captor = ArgumentCaptor.forClass(TrainingReport.class);
         verify(trainingReportRepository).saveAndFlush(captor.capture());
         assertThat(captor.getValue().getTrainingSession()).isEqualTo(session);
+    }
+
+    @Test
+    @DisplayName("훈련 중 대피 경로가 막혔으면 그 경과 초를 리포트에 복사해 응답한다")
+    void generate_routeBlockedDuringTraining_copiesRouteBlockedAfterSec() {
+        Instant startedAt = Instant.parse("2026-01-01T00:00:00Z");
+        TrainingSession session = endedSession(300, startedAt, startedAt.plusSeconds(300));
+        given(session.routeBlockedAfterSec()).willReturn(95);
+        given(trainingSessionRepository.findByIdAndScenario_Building_SchoolName(sessionId, SCHOOL_NAME))
+                .willReturn(Optional.of(session));
+        given(routeDeviationService.calculateForSession(sessionId, EMAIL))
+                .willReturn(new SessionDeviationResult(10, 0, 0.0));
+        given(trainingReportRepository.saveAndFlush(any())).willAnswer(invocation -> invocation.getArgument(0));
+
+        ReportResponse response = trainingReportService.generate(sessionId, new GenerateReportRequest(50, 50), EMAIL);
+
+        assertThat(response.getRouteBlockedAfterSec()).isEqualTo(95);
+        ArgumentCaptor<TrainingReport> captor = ArgumentCaptor.forClass(TrainingReport.class);
+        verify(trainingReportRepository).saveAndFlush(captor.capture());
+        assertThat(captor.getValue().getRouteBlockedAfterSec()).isEqualTo(95);
     }
 
     @Test

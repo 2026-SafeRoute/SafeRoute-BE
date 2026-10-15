@@ -138,7 +138,9 @@ public class TrainingSessionService {
           building.getName(),
           elapsed,
           session.getActualParticipants() != null ? session.getActualParticipants() : 0,
-          session.getCurrentSurvivalRate() != null ? session.getCurrentSurvivalRate() : BigDecimal.ZERO
+          session.getCurrentSurvivalRate() != null ? session.getCurrentSurvivalRate() : BigDecimal.ZERO,
+          session.getRouteBlockedAt(),
+          session.routeBlockedAfterSec()
       );
     }
     // COMPLETED/FAILED/CANCELLED/STOPPED - 종료/강제종료/타임아웃 직후 화면이 상태를
@@ -152,7 +154,9 @@ public class TrainingSessionService {
         session.getEndedAt(),
         elapsedSeconds,
         session.getActualParticipants() != null ? session.getActualParticipants() : 0,
-        session.getCurrentSurvivalRate() != null ? session.getCurrentSurvivalRate() : BigDecimal.ZERO
+        session.getCurrentSurvivalRate() != null ? session.getCurrentSurvivalRate() : BigDecimal.ZERO,
+        session.getRouteBlockedAt(),
+        session.routeBlockedAfterSec()
     );
   }
 

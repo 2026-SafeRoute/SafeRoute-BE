@@ -18,4 +18,7 @@ public class EndedSessionResponse implements TrainingStatusResponse {
   private Long elapsedSeconds;
   private Integer actualParticipants;
   private BigDecimal currentSurvivalRate;
+  // 훈련 중 화재로 대피 경로가 처음 막힌 시각과 경과 초(RunningSessionResponse와 같음). 막힌 적이 없으면 null.
+  private Instant routeBlockedAt;
+  private Integer routeBlockedAfterSec;
 }
