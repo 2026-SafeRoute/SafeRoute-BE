@@ -1,6 +1,7 @@
 package com.saferoute.domain.floor.service;
 
 import com.saferoute.domain.building.repository.BuildingRepository;
+import com.saferoute.domain.floor.entity.Floor;
 import com.saferoute.domain.training.entity.TrainingStatus;
 import com.saferoute.domain.training.repository.TrainingSessionRepository;
 import com.saferoute.global.api.error.FloorErrorCode;
@@ -30,5 +31,11 @@ public class FloorMapChangeGuard {
         if (trainingSessionRepository.existsByStatusAndScenario_Building_Id(TrainingStatus.RUNNING, buildingId)) {
             throw new ApiException(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING);
         }
+    }
+
+    // 층에 딸린 기기·그래프를 바꾸는 호출부용. 건물은 층에서 구한다.
+    @Transactional
+    public void validateNoRunningTraining(Floor floor) {
+        validateNoRunningTraining(floor.getBuilding().getId());
     }
 }

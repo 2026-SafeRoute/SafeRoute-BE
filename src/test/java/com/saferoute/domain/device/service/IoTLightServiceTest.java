@@ -1,5 +1,6 @@
 package com.saferoute.domain.device.service;
 
+import com.saferoute.domain.floor.service.FloorMapChangeGuard;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -63,6 +64,9 @@ class IoTLightServiceTest {
 
     private static final String EMAIL = "manager@saferoute.com";
     private static final String SCHOOL_NAME = "SafeRoute School";
+
+    @Mock
+    private FloorMapChangeGuard floorMapChangeGuard;
 
     @InjectMocks
     private IoTLightService iotLightService;
@@ -427,6 +431,25 @@ class IoTLightServiceTest {
         // then
         verify(mapEdgeJpaRepository).deleteByFromNode_IdOrToNode_Id(customNode.getId(), customNode.getId());
         verify(mapNodeJpaRepository).delete(customNode);
+    }
+
+    @Test
+    @DisplayName("훈련이 진행 중인 건물이면 유도등을 삭제하지 않고 FLOOR004를 던진다")
+    void deleteLight_whileTrainingRunning_throwsAndKeepsLight() {
+        MapNode customNode = createNode("LIGHT_002", NodeType.CUSTOM);
+        IoTLight light = createLight("LIGHT_002", customNode);
+        given(iotLightJpaRepository.findByIdAndCustomNode_Floor_Building_SchoolName(light.getId(), SCHOOL_NAME))
+                .willReturn(Optional.of(light));
+        org.mockito.BDDMockito.willThrow(new ApiException(
+                        com.saferoute.global.api.error.FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING))
+                .given(floorMapChangeGuard)
+                .validateNoRunningTraining(org.mockito.ArgumentMatchers.<com.saferoute.domain.floor.entity.Floor>any());
+
+        assertThatThrownBy(() -> iotLightService.deleteLight(light.getId(), EMAIL))
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).getErrorCode())
+                .isEqualTo(com.saferoute.global.api.error.FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING);
+        org.mockito.Mockito.verify(mapNodeJpaRepository, org.mockito.Mockito.never()).delete(any());
     }
 
     @Test

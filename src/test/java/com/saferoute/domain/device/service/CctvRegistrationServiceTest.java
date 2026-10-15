@@ -1,5 +1,6 @@
 package com.saferoute.domain.device.service;
 
+import com.saferoute.domain.floor.service.FloorMapChangeGuard;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -42,6 +43,7 @@ class CctvRegistrationServiceTest {
     @Mock FloorRepository floorRepository;
     @Mock DeviceTokenService deviceTokenService;
     @Mock CongestionConfigService congestionConfigService;
+    @Mock FloorMapChangeGuard floorMapChangeGuard;
 
     private CctvRegistrationService service;
     private Floor floor;
@@ -56,7 +58,8 @@ class CctvRegistrationServiceTest {
                 mapNodeJpaRepository,
                 floorRepository,
                 deviceTokenService,
-                congestionConfigService
+                congestionConfigService,
+                floorMapChangeGuard
         );
         floor = org.mockito.Mockito.mock(Floor.class);
         floorId = UUID.randomUUID();

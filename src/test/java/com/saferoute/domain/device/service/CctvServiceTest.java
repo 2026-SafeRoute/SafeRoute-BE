@@ -1,5 +1,6 @@
 package com.saferoute.domain.device.service;
 
+import com.saferoute.domain.floor.service.FloorMapChangeGuard;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -53,6 +54,7 @@ class CctvServiceTest {
     @Mock DeviceTokenService deviceTokenService;
     @Mock CongestionConfigService congestionConfigService;
     @Mock SchoolContextService schoolContextService;
+    @Mock FloorMapChangeGuard floorMapChangeGuard;
 
     private CctvService cctvService;
 
@@ -66,7 +68,8 @@ class CctvServiceTest {
                 cctvRegistrationService,
                 deviceTokenService,
                 congestionConfigService,
-                schoolContextService
+                schoolContextService,
+                floorMapChangeGuard
         );
         org.mockito.Mockito.lenient()
                 .when(schoolContextService.getSchoolName(EMAIL))
@@ -244,6 +247,25 @@ class CctvServiceTest {
         cctvService.deleteCctv(cctvId, EMAIL);
 
         verify(cctv).delete();
+    }
+
+    @Test
+    @DisplayName("훈련이 진행 중인 건물이면 CCTV를 삭제하지 않고 FLOOR004를 던진다")
+    void deleteCctv_whileTrainingRunning_throwsAndKeepsCctv() {
+        UUID cctvId = UUID.randomUUID();
+        Cctv cctv = cctv(cctvId);
+        given(cctvJpaRepository.findByIdAndCustomNode_Floor_Building_SchoolName(cctvId, SCHOOL_NAME))
+                .willReturn(Optional.of(cctv));
+        org.mockito.BDDMockito.willThrow(new ApiException(
+                        com.saferoute.global.api.error.FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING))
+                .given(floorMapChangeGuard)
+                .validateNoRunningTraining(org.mockito.ArgumentMatchers.<com.saferoute.domain.floor.entity.Floor>any());
+
+        assertThatThrownBy(() -> cctvService.deleteCctv(cctvId, EMAIL))
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).getErrorCode())
+                .isEqualTo(com.saferoute.global.api.error.FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING);
+        verify(cctv, org.mockito.Mockito.never()).delete();
     }
 
     @Test
