@@ -154,6 +154,22 @@ class FloorGraphReplacementIntegrationTest {
         assertThat(mapEdgeRepository.findAllByFloor_Id(fixture.floorId())).isNotEmpty();
     }
 
+    @Test
+    void deleteFloor_whileTrainingRunningInBuilding_isRejectedAndFloorKept() {
+        Fixture fixture = transactionTemplate.execute(status -> {
+            Fixture created = createFloorWithTrainingHistory("delete");
+            startAnotherTraining(created);
+            return created;
+        });
+
+        assertThatThrownBy(() -> floorService.deleteFloor(fixture.buildingId(), fixture.floorId(), fixture.email()))
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).getErrorCode())
+                .isEqualTo(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING);
+
+        assertThat(floorRepository.findById(fixture.floorId())).isPresent();
+    }
+
     private void startAnotherTraining(Fixture fixture) {
         Building building = buildingRepository.findById(fixture.buildingId()).orElseThrow();
         User admin = userRepository.findByEmail(fixture.email()).orElseThrow();
