@@ -40,5 +40,9 @@ public enum TrainingEventType {
     IOT_LIGHT_STATUS_UPDATED,
 
     // FireSpreadService가 화재 확산을 1스텝 진행시켜 새로 옮겨붙은 셀이 생겼을 때 발행된다.
-    FIRE_SPREAD_UPDATED
+    FIRE_SPREAD_UPDATED,
+
+    // 화재 확산으로 시작 지점에서 출구로 가는 우회 경로가 처음 사라졌을 때 세션당 한 번 발행된다.
+    // 훈련은 계속되며, 종료 여부는 관리자가 판단한다.
+    EVACUATION_ROUTE_BLOCKED
 }
