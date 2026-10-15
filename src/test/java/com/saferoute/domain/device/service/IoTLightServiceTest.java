@@ -148,6 +148,83 @@ class IoTLightServiceTest {
         return light;
     }
 
+    // === 훈련 중 변경 차단 (이슈 #282) ===
+
+    @Test
+    @DisplayName("훈련이 진행 중인 건물이면 유도등을 등록하지 않고 FLOOR004를 던진다")
+    void createLight_whileTrainingRunning_throws() {
+        CreateIoTLightRequest request = new CreateIoTLightRequest(floorId, "복도1 유도등", 0.3, 0.4);
+        given(floorRepository.findByIdAndBuilding_SchoolName(floorId, SCHOOL_NAME)).willReturn(Optional.of(floor));
+        org.mockito.BDDMockito.willThrow(new ApiException(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING))
+                .given(floorMapChangeGuard)
+                .validateNoRunningTraining(org.mockito.ArgumentMatchers.<Floor>any());
+
+        assertThatThrownBy(() -> iotLightService.createLight(request, EMAIL))
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).getErrorCode())
+                .isEqualTo(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING);
+        verify(mapNodeJpaRepository, never()).save(any());
+        verify(iotLightJpaRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("훈련이 진행 중인 건물이면 유도등 이름·위치를 수정하지 않고 FLOOR004를 던진다")
+    void updateLight_whileTrainingRunning_throws() {
+        MapNode customNode = createNode("LIGHT_010", NodeType.CUSTOM);
+        IoTLight light = createLight("LIGHT_010", customNode);
+        given(iotLightJpaRepository.findByIdAndCustomNode_Floor_Building_SchoolName(light.getId(), SCHOOL_NAME))
+                .willReturn(Optional.of(light));
+        org.mockito.BDDMockito.willThrow(new ApiException(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING))
+                .given(floorMapChangeGuard)
+                .validateNoRunningTraining(org.mockito.ArgumentMatchers.<Floor>any());
+
+        assertThatThrownBy(() -> iotLightService.updateLight(
+                light.getId(), new UpdateIoTLightRequest("변경된 이름", 0.7, 0.8), EMAIL))
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).getErrorCode())
+                .isEqualTo(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING);
+        assertThat(light.getName()).isEqualTo("LIGHT_010");
+    }
+
+    @Test
+    @DisplayName("훈련이 진행 중인 건물이면 유도등 안내 설정을 바꾸지 않고 FLOOR004를 던진다")
+    void configureGuidance_whileTrainingRunning_throws() {
+        MapNode customNode = createNode("LIGHT_011", NodeType.CUSTOM);
+        IoTLight light = createLight("LIGHT_011", customNode);
+        given(iotLightJpaRepository.findByIdAndCustomNode_Floor_Building_SchoolName(light.getId(), SCHOOL_NAME))
+                .willReturn(Optional.of(light));
+        org.mockito.BDDMockito.willThrow(new ApiException(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING))
+                .given(floorMapChangeGuard)
+                .validateNoRunningTraining(org.mockito.ArgumentMatchers.<Floor>any());
+
+        ConfigureGuidanceRequest request =
+                new ConfigureGuidanceRequest(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+        assertThatThrownBy(() -> iotLightService.configureGuidance(light.getId(), request, EMAIL))
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).getErrorCode())
+                .isEqualTo(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING);
+        assertThat(light.isGuidanceConfigured()).isFalse();
+    }
+
+    @Test
+    @DisplayName("훈련이 진행 중인 건물이면 유도등에 CCTV를 배정하지 않고 FLOOR004를 던진다")
+    void assignCctv_whileTrainingRunning_throws() {
+        MapNode customNode = createNode("LIGHT_012", NodeType.CUSTOM);
+        IoTLight light = createLight("LIGHT_012", customNode);
+        given(iotLightJpaRepository.findByIdAndCustomNode_Floor_Building_SchoolName(light.getId(), SCHOOL_NAME))
+                .willReturn(Optional.of(light));
+        org.mockito.BDDMockito.willThrow(new ApiException(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING))
+                .given(floorMapChangeGuard)
+                .validateNoRunningTraining(org.mockito.ArgumentMatchers.<Floor>any());
+
+        assertThatThrownBy(() -> iotLightService.assignCctv(
+                light.getId(), new AssignCctvRequest(UUID.randomUUID()), EMAIL))
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).getErrorCode())
+                .isEqualTo(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING);
+        assertThat(light.getCctv()).isNull();
+    }
+
     // === createLight ===
 
     @Test
