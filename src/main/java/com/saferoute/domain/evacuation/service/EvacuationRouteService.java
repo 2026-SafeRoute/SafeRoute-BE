@@ -34,8 +34,6 @@ public class EvacuationRouteService {
 
     // TODO: 혼잡도 가중치 계수 - DynamoDB 혼잡도 연동 인터페이스 확정 후 담당 팀원과 조율
     private static final double CONGESTION_WEIGHT = 1.0; // α
-    // TODO: 위험도(화재 확산 단계) 가중치 계수 - 확정 필요
-    private static final double DANGER_WEIGHT = 1.0; // β
 
     // 우선순위 큐에서 꺼내는 순서. 거리가 같으면 nodeId 순으로 고정한다.
     // 거리만으로 비교하면 거리가 같은 노드는 힙에 들어간 순서, 즉 인접 리스트 순서(=정렬 없는
@@ -51,7 +49,7 @@ public class EvacuationRouteService {
     private final FloorRepository floorRepository;
     private final SchoolContextService schoolContextService;
 
-    // 시작 노드에서 가장 가까운 EXIT 대상 노드까지 최단 경로 계산 (mock data 기준, congestion/danger는 0 고정)
+    // 시작 노드에서 가장 가까운 EXIT 대상 노드까지 최단 경로 계산 (mock data 기준, congestion은 0 고정)
     public EvacuationRoute findShortestRoute(UUID floorId, UUID startNodeId) {
         return findShortestRoute(floorId, startNodeId, Set.of());
     }
@@ -77,6 +75,19 @@ public class EvacuationRouteService {
     public EvacuationRoute findShortestRoute(
             UUID floorId, UUID startNodeId, Set<UUID> excludedEdgeIds, Map<UUID, Double> weightMultipliers
     ) {
+        return findShortestRoute(floorId, startNodeId, excludedEdgeIds, weightMultipliers, FireProximity.NONE);
+    }
+
+    // 화재 근접 위험 가중치까지 반영한다(FireProximity 참고). 불붙은 셀은 여전히 excludedEdgeIds로 제외하고,
+    // 곧 불붙을 셀을 지나는 엣지는 "그 엣지를 지나는 예상 시점"과 "예상 발화 시점"을 비교해 배율을 준다.
+    // 예상 시점은 시작 노드부터 그 경로로 걸은 실제 거리(m)를 보행 속도로 나눠 구한다 - 비용(가중치 합)이
+    // 아니라 실제 거리를 따로 누적해야 혼잡 배율 때문에 도착 시점이 부풀려지지 않는다.
+    // 비용이 도착 시점에 따라 달라지므로 엄밀한 최단 경로 보장은 없지만(시간 의존 비용), 꺼내는 순서는
+    // QUEUE_ORDER로 고정돼 있어 같은 입력이면 항상 같은 경로가 나온다.
+    public EvacuationRoute findShortestRoute(
+            UUID floorId, UUID startNodeId, Set<UUID> excludedEdgeIds, Map<UUID, Double> weightMultipliers,
+            FireProximity fireProximity
+    ) {
         List<MapNode> nodes = mapGraphRepository.findNodesByFloor(floorId);
         List<MapEdge> edges = mapGraphRepository.findEdgesByFloor(floorId).stream()
                 .filter(edge -> !excludedEdgeIds.contains(edge.getId()))
@@ -99,7 +110,9 @@ public class EvacuationRouteService {
 
         Map<UUID, Double> distance = new HashMap<>();
         Map<UUID, UUID> previous = new HashMap<>();
+        Map<UUID, Double> walkedMeters = new HashMap<>();
         distance.put(startNodeId, 0.0);
+        walkedMeters.put(startNodeId, 0.0);
 
         PriorityQueue<NodeDistance> queue = new PriorityQueue<>(QUEUE_ORDER);
         queue.add(new NodeDistance(startNodeId, 0.0));
@@ -123,9 +136,14 @@ public class EvacuationRouteService {
                         ? edge.getFromNode().getId()
                         : edge.getToNode().getId();
 
-                double newDistance = distance.get(current.nodeId()) + calculateWeight(edge, weightMultipliers);
+                double walked = walkedMeters.get(current.nodeId()) + edge.getDistance();
+                // 엣지를 다 지나는 시점 기준 - 들어가는 시점보다 늦으므로 위험을 더 보수적으로 본다.
+                double arrivalSec = walked / FireProximity.WALKING_SPEED_MPS;
+                double newDistance = distance.get(current.nodeId())
+                        + calculateWeight(edge, weightMultipliers, fireProximity, arrivalSec);
                 if (newDistance < distance.getOrDefault(neighbor, Double.MAX_VALUE)) {
                     distance.put(neighbor, newDistance);
+                    walkedMeters.put(neighbor, walked);
                     previous.put(neighbor, current.nodeId());
                     queue.add(new NodeDistance(neighbor, newDistance));
                 }
@@ -150,6 +168,16 @@ public class EvacuationRouteService {
     @Transactional(readOnly = true, noRollbackFor = RuntimeException.class)
     public Map<UUID, UUID> computeNextHops(
             UUID floorId, Set<UUID> excludedEdgeIds, Map<UUID, Double> weightMultipliers
+    ) {
+        return computeNextHops(floorId, excludedEdgeIds, weightMultipliers, FireProximity.NONE);
+    }
+
+    // 화재 근접 위험 가중치까지 반영한 다음 홉. 출발점이 층 전체라 엣지 도착 시점을 알 수 없으므로
+    // 도착 시점 비교 없이 확산 세대만으로 배율을 준다(FireProximity.multiplier의 arrivalSec = null).
+    @Transactional(readOnly = true, noRollbackFor = RuntimeException.class)
+    public Map<UUID, UUID> computeNextHops(
+            UUID floorId, Set<UUID> excludedEdgeIds, Map<UUID, Double> weightMultipliers,
+            FireProximity fireProximity
     ) {
         List<MapNode> nodes = mapGraphRepository.findNodesByFloor(floorId);
         List<MapEdge> edges = mapGraphRepository.findEdgesByFloor(floorId).stream()
@@ -182,7 +210,8 @@ public class EvacuationRouteService {
                 UUID predecessor = edge.getToNode().getId().equals(current.nodeId())
                         ? edge.getFromNode().getId()
                         : edge.getToNode().getId();
-                double newDistance = current.distance() + calculateWeight(edge, weightMultipliers);
+                double newDistance = current.distance()
+                        + calculateWeight(edge, weightMultipliers, fireProximity, null);
                 if (newDistance < distance.getOrDefault(predecessor, Double.MAX_VALUE)) {
                     distance.put(predecessor, newDistance);
                     nextHop.put(predecessor, current.nodeId());
@@ -219,15 +248,21 @@ public class EvacuationRouteService {
         return adjacency;
     }
 
-    // weight = (distance + α×congestion + β×danger) × 혼잡 재탐색용 배율
-    // TODO: congestion/danger 현재 0 고정 - 혼잡도(DynamoDB)·blocked 외 danger 데이터 연동 확정 후 반영.
-    // weightMultipliers는 그것과 별개로, RouteRecalculationService가 트리거 엣지에 "경로 혼잡 비용"
-    // (CAUTION ×1.5, CROWDED ×3.0)를 적용하기 위해 넘기는 값이다 - 두 메커니즘은 독립적이다.
-    private double calculateWeight(MapEdge edge, Map<UUID, Double> weightMultipliers) {
+    // weight = (distance + α×congestion) × 혼잡 배율 × 화재 근접 배율
+    // TODO: congestion 현재 0 고정 - 혼잡도(DynamoDB) 데이터 연동 확정 후 반영.
+    // weightMultipliers는 RouteRecalculationService가 혼잡 구간에 "경로 혼잡 비용"(CAUTION ×1.5,
+    // CROWDED ×3.0, VERY_CROWDED ×10)을 적용하기 위해 넘기는 값이다.
+    // 혼잡 배율과 화재 근접 배율이 겹치면 max가 아니라 곱한다. 두 위험은 서로 독립적이고 겹치면 더 나빠진다 -
+    // 혼잡하면 걸음이 느려져 불 옆에 머무는 시간이 길어지고, 불 옆이면 혼잡한 구간에서 빠져나갈 여유가 줄어든다.
+    // max로 합치면 "혼잡한 불 옆 복도"와 "혼잡하기만 한 복도"의 비용이 같아져 둘 중 하나를 고를 때 화재를
+    // 전혀 고려하지 못한다.
+    private double calculateWeight(MapEdge edge, Map<UUID, Double> weightMultipliers,
+            FireProximity fireProximity, Double arrivalSec) {
         double congestion = 0.0;
-        double danger = 0.0;
-        double baseWeight = edge.getDistance() + CONGESTION_WEIGHT * congestion + DANGER_WEIGHT * danger;
-        return baseWeight * weightMultipliers.getOrDefault(edge.getId(), 1.0);
+        double baseWeight = edge.getDistance() + CONGESTION_WEIGHT * congestion;
+        return baseWeight
+                * weightMultipliers.getOrDefault(edge.getId(), 1.0)
+                * fireProximity.multiplier(edge.getId(), arrivalSec);
     }
 
     private EvacuationRoute buildRoute(Map<UUID, MapNode> nodeById, Map<UUID, UUID> previous,

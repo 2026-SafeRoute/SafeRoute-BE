@@ -134,7 +134,7 @@ class RouteRecalculationServiceAsyncIntegrationTest {
             enteredWork.countDown();
             releaseWork.await();
             return invocation.callRealMethod();
-        }).when(evacuationRouteService).findShortestRoute(any(), any(), any(), any());
+        }).when(evacuationRouteService).findShortestRoute(any(), any(), any(), any(), any());
 
         routeRecalculationService.triggerAsync(
                 fixture.session(), edgeIds(fixture.congestedCorridor()), CongestionLevel.CROWDED,
@@ -176,7 +176,7 @@ class RouteRecalculationServiceAsyncIntegrationTest {
         awaitAsyncExecutorIdle();
 
         // 가드가 없으면 시작 노드를 다른 층에서 찾다가 비동기 스레드에서 예외가 나므로 탐색 호출까지 간다.
-        verify(evacuationRouteService, never()).findShortestRoute(any(), any(), any(), any());
+        verify(evacuationRouteService, never()).findShortestRoute(any(), any(), any(), any(), any());
         assertThat(routeRecalculationRepository
                 .findAllByTrainingSession_IdAndStatus(fixture.session().getId(), RecalculationStatus.PENDING))
                 .isEmpty();

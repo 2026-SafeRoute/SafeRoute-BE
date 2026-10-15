@@ -143,7 +143,7 @@ class RouteRecalculationServiceApproveGuidanceIntegrationTest {
         given(currentCongestionWeightProvider.currentMultipliers(any(), any()))
                 .willReturn(Map.of(fixture.congestedEdgeId(), 10.0));
         doThrow(new IllegalStateException("next hop failure"))
-                .when(evacuationRouteService).computeNextHops(any(), any(), any());
+                .when(evacuationRouteService).computeNextHops(any(), any(), any(), any());
 
         routeRecalculationService.approve(fixture.recalculationId(), fixture.approverEmail());
 
