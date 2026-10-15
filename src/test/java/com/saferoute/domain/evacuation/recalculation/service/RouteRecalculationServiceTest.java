@@ -33,7 +33,9 @@ import com.saferoute.domain.evacuation.recalculation.entity.RouteRecalculation;
 import com.saferoute.domain.evacuation.recalculation.repository.RouteRecalculationRepository;
 import com.saferoute.domain.evacuation.service.EvacuationRoute;
 import com.saferoute.domain.evacuation.service.EvacuationRouteService;
+import com.saferoute.domain.evacuation.service.FireProximity;
 import com.saferoute.domain.floor.entity.Floor;
+import com.saferoute.domain.training.entity.FireSpreadSpeed;
 import com.saferoute.domain.training.entity.FireZone;
 import com.saferoute.domain.training.entity.TrainingScenario;
 import com.saferoute.domain.training.entity.TrainingSession;
@@ -242,7 +244,7 @@ class RouteRecalculationServiceTest {
                 session.getId(), RecalculationStatus.PENDING)).willReturn(List.of(existingFromOtherCctv));
         givenNoApprovedHistory();
         givenNoDirectRoute();
-        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any()))
+        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any(), any()))
                 .willReturn(new EvacuationRoute(List.of(exitNode), 12.5));
 
         routeRecalculationService.trigger(session, List.of(triggerEdge), CongestionLevel.CROWDED,
@@ -260,7 +262,7 @@ class RouteRecalculationServiceTest {
                 session.getId(), RecalculationStatus.PENDING)).willReturn(List.of(existing));
         givenNoApprovedHistory();
         givenNoDirectRoute();
-        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any()))
+        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any(), any()))
                 .willThrow(new ApiException(EvacuationErrorCode.EVACUATION_ROUTE_NOT_FOUND));
 
         routeRecalculationService.trigger(session, List.of(triggerEdge), CongestionLevel.VERY_CROWDED,
@@ -282,7 +284,7 @@ class RouteRecalculationServiceTest {
         MapNode exitNode = MapNode.create(mock(Floor.class), "STAIR1", NodeType.STAIR, "STAIR1", 0, 0, true);
         ReflectionTestUtils.setField(exitNode, "id", UUID.randomUUID());
         EvacuationRoute route = new EvacuationRoute(List.of(exitNode), 12.5);
-        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any())).willReturn(route);
+        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any(), any())).willReturn(route);
         RouteRecalculation saved = pendingRecalculation(CongestionLevel.CROWDED);
         given(routeRecalculationRepository.save(any())).willReturn(saved);
 
@@ -363,13 +365,13 @@ class RouteRecalculationServiceTest {
         givenNoExistingPending();
         givenNoApprovedHistory();
         givenNoDirectRoute();
-        given(evacuationRouteService.findShortestRoute(eq(floorId), eq(startNodeId), anySet(), any()))
+        given(evacuationRouteService.findShortestRoute(eq(floorId), eq(startNodeId), anySet(), any(), any()))
                 .willThrow(new ApiException(EvacuationErrorCode.EVACUATION_ROUTE_NOT_FOUND));
 
         routeRecalculationService.trigger(session, List.of(edgeOnOtherFloor(), triggerEdge),
                 CongestionLevel.CROWDED, RecalculationTriggerType.STARTED, "CCTV_001", 3.5);
 
-        verify(evacuationRouteService).findShortestRoute(eq(floorId), eq(startNodeId), anySet(), any());
+        verify(evacuationRouteService).findShortestRoute(eq(floorId), eq(startNodeId), anySet(), any(), any());
     }
 
     @Test
@@ -400,7 +402,7 @@ class RouteRecalculationServiceTest {
         MapNode exitNode = MapNode.create(mock(Floor.class), "STAIR1", NodeType.STAIR, "STAIR1", 0, 0, true);
         ReflectionTestUtils.setField(exitNode, "id", UUID.randomUUID());
         EvacuationRoute route = new EvacuationRoute(List.of(exitNode), 12.5);
-        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any())).willReturn(route);
+        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any(), any())).willReturn(route);
         RouteRecalculation saved = pendingRecalculation(CongestionLevel.CROWDED);
         given(routeRecalculationRepository.save(any())).willReturn(saved);
 
@@ -408,8 +410,89 @@ class RouteRecalculationServiceTest {
                 RecalculationTriggerType.STARTED, "CCTV_001", 3.5);
 
         ArgumentCaptor<Set<UUID>> excludedEdgesCaptor = ArgumentCaptor.forClass(Set.class);
-        verify(evacuationRouteService).findShortestRoute(any(), any(), excludedEdgesCaptor.capture(), any());
+        verify(evacuationRouteService).findShortestRoute(any(), any(), excludedEdgesCaptor.capture(), any(), any());
         assertThat(excludedEdgesCaptor.getValue()).contains(firedEdgeId);
+    }
+
+    @Test
+    @DisplayName("혼잡 우회 후보를 계산할 때 화재 셀에서 상하좌우로 1~2세대 안에 번질 구간을 근접 위험으로 넘긴다")
+    void trigger_passesFireProximityOfNextGenerations() {
+        givenNoExistingPending();
+        givenNoApprovedHistory();
+        givenNoDirectRoute();
+
+        UUID scenarioId = UUID.randomUUID();
+        given(scenario.getId()).willReturn(scenarioId);
+        given(scenario.getFireSpreadSpeed()).willReturn(FireSpreadSpeed.FAST);
+
+        // (0,0)=화재  (0,1)  (0,2)  (0,3)
+        // (1,0)=벽    (1,1)
+        // -> 1세대: (0,1) / 2세대: (0,2), (1,1) / 그 밖: (0,3), 벽 (1,0)
+        Floor gridFloor = mock(Floor.class);
+        FloorGridCell fired = gridCell(gridFloor, 0, 0, true);
+        fired.markFired();
+        FloorGridCell first = gridCell(gridFloor, 0, 1, true);
+        FloorGridCell second = gridCell(gridFloor, 0, 2, true);
+        FloorGridCell beyond = gridCell(gridFloor, 0, 3, true);
+        FloorGridCell wall = gridCell(gridFloor, 1, 0, false);
+        FloorGridCell secondBelow = gridCell(gridFloor, 1, 1, true);
+        given(floorGridCellRepository.findAllByFloor_IdAndIsFiredTrue(floorId)).willReturn(List.of(fired));
+        given(floorGridCellRepository.findAllByFloor_Id(floorId))
+                .willReturn(List.of(fired, first, second, beyond, wall, secondBelow));
+        FireZone fireZone = mock(FireZone.class);
+        given(fireZone.getGridCellId()).willReturn(fired.getId());
+        given(fireZoneRepository.findByScenario_IdAndFloor_Id(scenarioId, floorId)).willReturn(List.of(fireZone));
+
+        MapEdge firedEdge = edgeWithId();       // 화재 셀 + 1세대 셀 -> 제외 대상이라 근접 정보에서 빠진다
+        MapEdge firstEdge = edgeWithId();       // 1세대 셀
+        MapEdge secondEdge = edgeWithId();      // 2세대 셀 + 그 밖 셀 -> 가장 빠른 2세대
+        MapEdge beyondEdge = edgeWithId();      // 그 밖 셀만
+        MapEdge wallEdge = edgeWithId();        // 걸을 수 없는 셀 - 불이 번지지 않는다
+        List<MapEdgeGridCell> mappings = List.of(
+                MapEdgeGridCell.create(firedEdge, fired), MapEdgeGridCell.create(firedEdge, first),
+                MapEdgeGridCell.create(firstEdge, first),
+                MapEdgeGridCell.create(secondEdge, second), MapEdgeGridCell.create(secondEdge, beyond),
+                MapEdgeGridCell.create(beyondEdge, beyond),
+                MapEdgeGridCell.create(wallEdge, wall));
+        given(mapEdgeGridCellRepository.findAllByGridCell_IdIn(org.mockito.ArgumentMatchers.anyList()))
+                .willAnswer(invocation -> {
+                    List<UUID> cellIds = invocation.getArgument(0);
+                    return mappings.stream()
+                            .filter(mapping -> cellIds.contains(mapping.getGridCell().getId()))
+                            .toList();
+                });
+
+        MapNode exitNode = MapNode.create(mock(Floor.class), "STAIR1", NodeType.STAIR, "STAIR1", 0, 0, true);
+        ReflectionTestUtils.setField(exitNode, "id", UUID.randomUUID());
+        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any(), any()))
+                .willReturn(new EvacuationRoute(List.of(exitNode), 12.5));
+        RouteRecalculation saved = pendingRecalculation(CongestionLevel.CROWDED);
+        given(routeRecalculationRepository.save(any())).willReturn(saved);
+
+        routeRecalculationService.trigger(session, List.of(triggerEdge), CongestionLevel.CROWDED,
+                RecalculationTriggerType.STARTED, "CCTV_001", 3.5);
+
+        ArgumentCaptor<Set<UUID>> excludedEdgesCaptor = ArgumentCaptor.forClass(Set.class);
+        ArgumentCaptor<FireProximity> fireProximityCaptor = ArgumentCaptor.forClass(FireProximity.class);
+        verify(evacuationRouteService).findShortestRoute(
+                any(), any(), excludedEdgesCaptor.capture(), any(), fireProximityCaptor.capture());
+        assertThat(excludedEdgesCaptor.getValue()).contains(firedEdge.getId());
+        assertThat(fireProximityCaptor.getValue().generationByEdgeId()).containsOnly(
+                Map.entry(firstEdge.getId(), 1),
+                Map.entry(secondEdge.getId(), 2));
+        assertThat(fireProximityCaptor.getValue().spreadIntervalSec()).isEqualTo(5.0);
+    }
+
+    private FloorGridCell gridCell(Floor gridFloor, int row, int column, boolean walkable) {
+        FloorGridCell cell = FloorGridCell.create(gridFloor, row, column, walkable, 0, 0);
+        ReflectionTestUtils.setField(cell, "id", UUID.randomUUID());
+        return cell;
+    }
+
+    private MapEdge edgeWithId() {
+        MapEdge edge = MapEdge.create(triggerEdge.getFloor(), mock(MapNode.class), mock(MapNode.class), 3.0, true);
+        ReflectionTestUtils.setField(edge, "id", UUID.randomUUID());
+        return edge;
     }
 
     @Test
@@ -418,7 +501,7 @@ class RouteRecalculationServiceTest {
         givenNoExistingPending();
         givenNoApprovedHistory();
         givenNoDirectRoute();
-        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any()))
+        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any(), any()))
                 .willThrow(new ApiException(EvacuationErrorCode.EVACUATION_ROUTE_NOT_FOUND));
 
         routeRecalculationService.trigger(session, List.of(triggerEdge), CongestionLevel.CROWDED,
@@ -441,7 +524,7 @@ class RouteRecalculationServiceTest {
         MapNode exitNode = MapNode.create(mock(Floor.class), "STAIR1", NodeType.STAIR, "STAIR1", 0, 0, true);
         ReflectionTestUtils.setField(exitNode, "id", UUID.randomUUID());
         EvacuationRoute route = new EvacuationRoute(List.of(exitNode), 12.5);
-        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any())).willReturn(route);
+        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any(), any())).willReturn(route);
 
         RouteRecalculation saved = pendingRecalculation(CongestionLevel.VERY_CROWDED);
         given(routeRecalculationRepository.save(any())).willReturn(saved);
@@ -454,7 +537,7 @@ class RouteRecalculationServiceTest {
         ArgumentCaptor<Set<UUID>> excludedEdgesCaptor = ArgumentCaptor.forClass(Set.class);
         ArgumentCaptor<Map<UUID, Double>> multipliersCaptor = ArgumentCaptor.forClass(Map.class);
         verify(evacuationRouteService).findShortestRoute(
-                any(), any(), excludedEdgesCaptor.capture(), multipliersCaptor.capture());
+                any(), any(), excludedEdgesCaptor.capture(), multipliersCaptor.capture(), any());
         assertThat(excludedEdgesCaptor.getValue()).isEmpty();
         assertThat(multipliersCaptor.getValue()).containsEntry(
                 triggerEdge.getId(), CurrentCongestionWeightProvider.VERY_CROWDED_WEIGHT_MULTIPLIER);
@@ -480,7 +563,7 @@ class RouteRecalculationServiceTest {
 
         MapNode exitNode = MapNode.create(mock(Floor.class), "STAIR1", NodeType.STAIR, "STAIR1", 0, 0, true);
         ReflectionTestUtils.setField(exitNode, "id", UUID.randomUUID());
-        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any()))
+        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any(), any()))
                 .willReturn(new EvacuationRoute(List.of(exitNode), 12.5));
         RouteRecalculation savedPending = pendingRecalculation(CongestionLevel.CROWDED);
         given(routeRecalculationRepository.save(any())).willReturn(savedPending);
@@ -489,7 +572,7 @@ class RouteRecalculationServiceTest {
                 RecalculationTriggerType.STARTED, "CCTV_001", 3.5);
 
         ArgumentCaptor<Map<UUID, Double>> multipliersCaptor = ArgumentCaptor.forClass(Map.class);
-        verify(evacuationRouteService).findShortestRoute(any(), any(), anySet(), multipliersCaptor.capture());
+        verify(evacuationRouteService).findShortestRoute(any(), any(), anySet(), multipliersCaptor.capture(), any());
         assertThat(multipliersCaptor.getValue())
                 .containsEntry(triggerEdge.getId(), 3.0)
                 .containsEntry(otherCctvEdgeId, 3.0);
@@ -512,7 +595,7 @@ class RouteRecalculationServiceTest {
         routeRecalculationService.trigger(session, List.of(triggerEdge), CongestionLevel.CROWDED,
                 RecalculationTriggerType.LEVEL_UP, "CCTV_001", 3.5);
 
-        verify(evacuationRouteService, never()).findShortestRoute(any(), any(), anySet(), any());
+        verify(evacuationRouteService, never()).findShortestRoute(any(), any(), anySet(), any(), any());
         verify(trainingEventPublisher, never()).publishRouteRecalculationCancelledAfterCommit(any());
         verify(routeRecalculationRepository, never()).save(any());
     }
@@ -527,7 +610,7 @@ class RouteRecalculationServiceTest {
         MapNode exitNode = MapNode.create(mock(Floor.class), "STAIR1", NodeType.STAIR, "STAIR1", 0, 0, true);
         ReflectionTestUtils.setField(exitNode, "id", UUID.randomUUID());
         EvacuationRoute route = new EvacuationRoute(List.of(exitNode), 12.5);
-        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any())).willReturn(route);
+        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any(), any())).willReturn(route);
 
         RouteRecalculation saved = pendingRecalculation(CongestionLevel.CROWDED);
         given(routeRecalculationRepository.save(any())).willReturn(saved);
@@ -540,7 +623,7 @@ class RouteRecalculationServiceTest {
         ArgumentCaptor<Set<UUID>> excludedEdgesCaptor = ArgumentCaptor.forClass(Set.class);
         ArgumentCaptor<Map<UUID, Double>> multipliersCaptor = ArgumentCaptor.forClass(Map.class);
         verify(evacuationRouteService).findShortestRoute(
-                any(), any(), excludedEdgesCaptor.capture(), multipliersCaptor.capture());
+                any(), any(), excludedEdgesCaptor.capture(), multipliersCaptor.capture(), any());
         assertThat(excludedEdgesCaptor.getValue()).isEmpty();
         assertThat(multipliersCaptor.getValue()).containsEntry(triggerEdge.getId(), 3.0);
         assertThat(multipliersCaptor.getValue()).containsEntry(secondEdge.getId(), 3.0);
@@ -562,7 +645,7 @@ class RouteRecalculationServiceTest {
         MapNode exitNode = MapNode.create(mock(Floor.class), "STAIR1", NodeType.STAIR, "STAIR1", 0, 0, true);
         ReflectionTestUtils.setField(exitNode, "id", sharedNodeId);
         EvacuationRoute candidateRoute = new EvacuationRoute(List.of(exitNode), 20.0);
-        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any())).willReturn(candidateRoute);
+        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any(), any())).willReturn(candidateRoute);
 
         routeRecalculationService.trigger(session, List.of(triggerEdge), CongestionLevel.CROWDED,
                 RecalculationTriggerType.LEVEL_UP, "CCTV_001", 3.5);
@@ -645,7 +728,7 @@ class RouteRecalculationServiceTest {
 
         ArgumentCaptor<Map<UUID, Double>> multipliersCaptor = ArgumentCaptor.forClass(Map.class);
         verify(evacuationRouteService).findShortestRoute(
-                eq(floorId), eq(startNodeId), anySet(), multipliersCaptor.capture());
+                eq(floorId), eq(startNodeId), anySet(), multipliersCaptor.capture(), any());
         assertThat(multipliersCaptor.getValue()).containsExactly(Map.entry(stillCongestedEdgeId, 3.0));
     }
 
@@ -724,7 +807,7 @@ class RouteRecalculationServiceTest {
 
         assertThat(pending.getStatus()).isEqualTo(RecalculationStatus.PENDING);
         verify(routeRecalculationRepository, never()).save(any());
-        verify(evacuationRouteService, never()).findShortestRoute(any(), any(), anySet(), any());
+        verify(evacuationRouteService, never()).findShortestRoute(any(), any(), anySet(), any(), any());
     }
 
     @Test
@@ -733,7 +816,7 @@ class RouteRecalculationServiceTest {
         RouteRecalculation pending = pendingWithNodes(List.of(UUID.randomUUID()));
         given(routeRecalculationRepository.findAllByTrainingSession_IdAndStatus(
                 session.getId(), RecalculationStatus.PENDING)).willReturn(List.of(pending));
-        given(evacuationRouteService.findShortestRoute(eq(floorId), eq(startNodeId), anySet(), any()))
+        given(evacuationRouteService.findShortestRoute(eq(floorId), eq(startNodeId), anySet(), any(), any()))
                 .willThrow(new ApiException(EvacuationErrorCode.EVACUATION_ROUTE_NOT_FOUND));
 
         routeRecalculationService.trigger(session, List.of(triggerEdge), CongestionLevel.NORMAL,
@@ -759,7 +842,7 @@ class RouteRecalculationServiceTest {
         MapNode exitNode = MapNode.create(mock(Floor.class), "STAIR1", NodeType.STAIR, "STAIR1", 0, 0, true);
         ReflectionTestUtils.setField(exitNode, "id", UUID.randomUUID());
         EvacuationRoute route = new EvacuationRoute(List.of(exitNode), 12.5);
-        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any())).willReturn(route);
+        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any(), any())).willReturn(route);
         UUID congestedEdgeId = UUID.randomUUID();
         given(currentCongestionWeightProvider.currentMultipliers(any(), eq(floorId)))
                 .willReturn(Map.of(congestedEdgeId, 3.0));
@@ -774,7 +857,7 @@ class RouteRecalculationServiceTest {
         ArgumentCaptor<Set<UUID>> excludedEdgesCaptor = ArgumentCaptor.forClass(Set.class);
         ArgumentCaptor<Map<UUID, Double>> multipliersCaptor = ArgumentCaptor.forClass(Map.class);
         verify(evacuationRouteService).findShortestRoute(
-                any(), any(), excludedEdgesCaptor.capture(), multipliersCaptor.capture());
+                any(), any(), excludedEdgesCaptor.capture(), multipliersCaptor.capture(), any());
         assertThat(excludedEdgesCaptor.getValue()).containsExactlyInAnyOrder(triggerEdge.getId(), secondEdge.getId());
         assertThat(multipliersCaptor.getValue()).containsExactly(Map.entry(congestedEdgeId, 3.0));
 
@@ -797,7 +880,7 @@ class RouteRecalculationServiceTest {
 
         MapNode exitNode = MapNode.create(mock(Floor.class), "STAIR1", NodeType.STAIR, "STAIR1", 0, 0, true);
         ReflectionTestUtils.setField(exitNode, "id", UUID.randomUUID());
-        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any()))
+        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any(), any()))
                 .willReturn(new EvacuationRoute(List.of(exitNode), 12.5));
         RouteRecalculation saved = pendingRecalculation(CongestionLevel.CROWDED);
         given(routeRecalculationRepository.save(any())).willReturn(saved);
@@ -805,7 +888,7 @@ class RouteRecalculationServiceTest {
         routeRecalculationService.triggerForFireSpread(session, List.of(triggerEdge));
 
         ArgumentCaptor<Map<UUID, Double>> multipliersCaptor = ArgumentCaptor.forClass(Map.class);
-        verify(evacuationRouteService).findShortestRoute(any(), any(), anySet(), multipliersCaptor.capture());
+        verify(evacuationRouteService).findShortestRoute(any(), any(), anySet(), multipliersCaptor.capture(), any());
         assertThat(multipliersCaptor.getValue()).isEmpty();
         verify(routeRecalculationRepository, times(1)).save(any());
         verify(trainingEventPublisher, times(1)).publishRouteRecalculationRequestedAfterCommit(saved);
@@ -823,7 +906,7 @@ class RouteRecalculationServiceTest {
         MapNode exitNode = MapNode.create(mock(Floor.class), "STAIR1", NodeType.STAIR, "STAIR1", 0, 0, true);
         ReflectionTestUtils.setField(exitNode, "id", UUID.randomUUID());
         EvacuationRoute route = new EvacuationRoute(List.of(exitNode), 12.5);
-        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any())).willReturn(route);
+        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any(), any())).willReturn(route);
         RouteRecalculation saved = pendingRecalculation(CongestionLevel.CROWDED);
         given(routeRecalculationRepository.save(any())).willReturn(saved);
 
@@ -841,7 +924,7 @@ class RouteRecalculationServiceTest {
                 session.getId(), RecalculationStatus.PENDING)).willReturn(List.of(existing));
         givenNoApprovedHistory();
         givenDirectRouteCrossesTriggerEdge();
-        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any()))
+        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any(), any()))
                 .willThrow(new ApiException(EvacuationErrorCode.EVACUATION_ROUTE_NOT_FOUND));
 
         routeRecalculationService.triggerForFireSpread(session, List.of(triggerEdge));
@@ -859,7 +942,7 @@ class RouteRecalculationServiceTest {
         givenNoExistingPending();
         givenNoApprovedHistory();
         givenDirectRouteCrossesTriggerEdge();
-        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any()))
+        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any(), any()))
                 .willThrow(new ApiException(EvacuationErrorCode.EVACUATION_ROUTE_NOT_FOUND));
         given(session.markRouteBlocked(any())).willReturn(true);
 
@@ -875,7 +958,7 @@ class RouteRecalculationServiceTest {
         givenNoExistingPending();
         givenNoApprovedHistory();
         givenDirectRouteCrossesTriggerEdge();
-        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any()))
+        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any(), any()))
                 .willThrow(new ApiException(EvacuationErrorCode.EVACUATION_ROUTE_NOT_FOUND));
         given(session.markRouteBlocked(any())).willReturn(false);
 
@@ -892,7 +975,7 @@ class RouteRecalculationServiceTest {
         routeRecalculationService.triggerForFireSpread(session, List.of(triggerEdge));
 
         verify(session, never()).markRouteBlocked(any());
-        verify(evacuationRouteService, never()).findShortestRoute(any(), any(), anySet(), any());
+        verify(evacuationRouteService, never()).findShortestRoute(any(), any(), anySet(), any(), any());
         verify(trainingEventPublisher, never()).publishEvacuationRouteBlockedAfterCommit(any(), any());
         verify(routeRecalculationRepository, never()).save(any());
     }
@@ -917,7 +1000,7 @@ class RouteRecalculationServiceTest {
         routeRecalculationService.triggerForFireSpread(session, List.of(triggerEdge));
 
         assertThat(existing.getStatus()).isEqualTo(RecalculationStatus.PENDING);
-        verify(evacuationRouteService, never()).findShortestRoute(any(), any(), anySet(), any());
+        verify(evacuationRouteService, never()).findShortestRoute(any(), any(), anySet(), any(), any());
         verify(routeRecalculationRepository, never()).save(any());
         verify(trainingEventPublisher, never()).publishRouteRecalculationRequestedAfterCommit(any());
     }
@@ -969,7 +1052,7 @@ class RouteRecalculationServiceTest {
         routeRecalculationService.triggerForFireSpread(session, List.of(triggerEdge));
 
         verify(routeRecalculationRepository, never()).save(any());
-        verify(evacuationRouteService, never()).findShortestRoute(any(), any(), anySet(), any());
+        verify(evacuationRouteService, never()).findShortestRoute(any(), any(), anySet(), any(), any());
     }
 
     @Test
@@ -1001,7 +1084,7 @@ class RouteRecalculationServiceTest {
 
     // ENDED 후보(층 전체 혼잡 + 화재 반영)로 계산되는 경로.
     private void givenEndedCandidate(EvacuationRoute route) {
-        given(evacuationRouteService.findShortestRoute(eq(floorId), eq(startNodeId), anySet(), any()))
+        given(evacuationRouteService.findShortestRoute(eq(floorId), eq(startNodeId), anySet(), any(), any()))
                 .willReturn(route);
     }
 
@@ -1069,7 +1152,7 @@ class RouteRecalculationServiceTest {
 
         MapNode exitNode = MapNode.create(mock(Floor.class), "STAIR1", NodeType.STAIR, "STAIR1", 0, 0, true);
         ReflectionTestUtils.setField(exitNode, "id", UUID.randomUUID());
-        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any()))
+        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any(), any()))
                 .willReturn(new EvacuationRoute(List.of(exitNode), 12.5));
         RouteRecalculation savedPending = pendingRecalculation(CongestionLevel.CROWDED);
         given(routeRecalculationRepository.save(any())).willReturn(savedPending);
@@ -1225,7 +1308,7 @@ class RouteRecalculationServiceTest {
         org.mockito.Mockito.lenient().when(manager.getUsername()).thenReturn("manager");
         given(userRepository.findByEmail(MANAGER_EMAIL)).willReturn(Optional.of(manager));
         Map<UUID, UUID> nextHops = Map.of(UUID.randomUUID(), UUID.randomUUID());
-        given(evacuationRouteService.computeNextHops(eq(floorId), anySet(), anyMap())).willReturn(nextHops);
+        given(evacuationRouteService.computeNextHops(eq(floorId), anySet(), anyMap(), any())).willReturn(nextHops);
 
         RouteRecalculationResponse response = routeRecalculationService.approve(recalculation.getId(), MANAGER_EMAIL);
 
@@ -1273,7 +1356,7 @@ class RouteRecalculationServiceTest {
                 .findByIdAndTrainingSession_Scenario_Building_SchoolName(
                         recalculation.getId(), SCHOOL_NAME)).willReturn(Optional.of(recalculation));
         given(userRepository.findByEmail(MANAGER_EMAIL)).willReturn(Optional.of(mock(User.class)));
-        given(evacuationRouteService.computeNextHops(eq(floorId), anySet(), anyMap()))
+        given(evacuationRouteService.computeNextHops(eq(floorId), anySet(), anyMap(), any()))
                 .willThrow(new IllegalStateException("boom"));
 
         routeRecalculationService.approve(recalculation.getId(), MANAGER_EMAIL);
@@ -1589,6 +1672,6 @@ class RouteRecalculationServiceTest {
         verify(routeRecalculationRepository, never())
                 .findAllByTrainingSession_IdAndStatus(any(), any());
         verify(routeRecalculationRepository, never()).save(any());
-        verify(evacuationRouteService, never()).findShortestRoute(any(), any(), anySet(), any());
+        verify(evacuationRouteService, never()).findShortestRoute(any(), any(), anySet(), any(), any());
     }
 }

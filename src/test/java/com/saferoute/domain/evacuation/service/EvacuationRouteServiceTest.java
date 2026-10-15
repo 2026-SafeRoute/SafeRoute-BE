@@ -397,4 +397,189 @@ class EvacuationRouteServiceTest {
         MapNode expectedExit = stair1.getId().compareTo(stair2.getId()) < 0 ? stair1 : stair2;
         assertThat(forward.path()).containsExactly(room1, expectedExit);
     }
+
+    // === 화재 근접 위험 가중치 ===
+    // 기본 그래프(setUp 주석)에서 화재가 없으면 STAIR2 경로(2+5+3+2=12)가 STAIR1 경로(2+5+10=17)보다 짧다.
+
+    private static final double MEDIUM_INTERVAL_SEC = 15.0;
+    private static final double FAST_INTERVAL_SEC = 5.0;
+
+    @Test
+    @DisplayName("다음 세대에 불이 번질 복도는 페널티를 받아, 조금 더 먼 경로를 고른다")
+    void findShortestRoute_fireProximity_avoidsCorridorNextToFire() {
+        MapEdge e1 = createEdge(room1, door1, 2);
+        MapEdge e2 = createEdge(door1, hallway1, 5);
+        MapEdge e3 = createEdge(hallway1, stair1, 10);
+        MapEdge e4 = createEdge(hallway1, hallway2, 3);
+        MapEdge e5 = createEdge(hallway2, stair2, 2); // 불 바로 옆(1세대) - 도착 전에 불붙는다 ×5
+        givenGraph(List.of(room1, door1, hallway1, hallway2, stair1, stair2), List.of(e1, e2, e3, e4, e5));
+        FireProximity fireProximity = new FireProximity(Map.of(e5.getId(), 1), MEDIUM_INTERVAL_SEC);
+
+        EvacuationRoute route = evacuationRouteService.findShortestRoute(
+                floorId, room1.getId(), Set.of(), Map.of(), fireProximity);
+
+        // STAIR2 쪽은 2+5+3+2×5=20이 되어 STAIR1 쪽(17)이 더 싸다.
+        assertThat(route.path()).containsExactly(room1, door1, hallway1, stair1);
+        assertThat(route.totalWeight()).isEqualTo(17.0);
+    }
+
+    @Test
+    @DisplayName("불 옆 구간만 남은 경로도 제외가 아니라 페널티라서 여전히 선택된다")
+    void findShortestRoute_fireProximity_onlyPathNearFire_stillSelected() {
+        MapEdge e1 = createEdge(room1, door1, 2);
+        MapEdge e2 = createEdge(door1, hallway1, 5);
+        MapEdge e3 = createEdge(hallway1, stair1, 10); // 불붙은 셀 - 제외
+        MapEdge e4 = createEdge(hallway1, hallway2, 3);
+        MapEdge e5 = createEdge(hallway2, stair2, 2); // 불 바로 옆 - 페널티만
+        givenGraph(List.of(room1, door1, hallway1, hallway2, stair1, stair2), List.of(e1, e2, e3, e4, e5));
+        FireProximity fireProximity = new FireProximity(Map.of(e5.getId(), 1), MEDIUM_INTERVAL_SEC);
+
+        EvacuationRoute route = evacuationRouteService.findShortestRoute(
+                floorId, room1.getId(), Set.of(e3.getId()), Map.of(), fireProximity);
+
+        assertThat(route.path()).containsExactly(room1, door1, hallway1, hallway2, stair2);
+        assertThat(route.totalWeight()).isEqualTo(2 + 5 + 3 + 2 * 5.0);
+    }
+
+    @Test
+    @DisplayName("불붙은 셀의 엣지는 근접 가중치와 무관하게 여전히 제외된다 - 근접 페널티가 큰 우회로를 대신 고른다")
+    void findShortestRoute_fireProximity_firedEdgeStillExcluded() {
+        MapEdge e1 = createEdge(room1, door1, 2);
+        MapEdge e2 = createEdge(door1, hallway1, 5);
+        MapEdge e3 = createEdge(hallway1, stair1, 10); // 불 바로 옆 - ×5
+        MapEdge e4 = createEdge(hallway1, hallway2, 3);
+        MapEdge e5 = createEdge(hallway2, stair2, 2); // 불붙은 셀 - 근접 정보에 같이 들어 있어도 제외
+        givenGraph(List.of(room1, door1, hallway1, hallway2, stair1, stair2), List.of(e1, e2, e3, e4, e5));
+        FireProximity fireProximity = new FireProximity(Map.of(e3.getId(), 1, e5.getId(), 1), MEDIUM_INTERVAL_SEC);
+
+        EvacuationRoute route = evacuationRouteService.findShortestRoute(
+                floorId, room1.getId(), Set.of(e5.getId()), Map.of(), fireProximity);
+
+        assertThat(route.path()).containsExactly(room1, door1, hallway1, stair1);
+        assertThat(route.totalWeight()).isEqualTo(2 + 5 + 10 * 5.0);
+    }
+
+    @Test
+    @DisplayName("불붙은 셀로 모든 출구가 막히면 근접 가중치가 있어도 경로 없음 예외를 던진다")
+    void findShortestRoute_fireProximity_allExitsFired_throws() {
+        MapEdge e1 = createEdge(room1, door1, 2);
+        MapEdge e2 = createEdge(door1, hallway1, 5);
+        MapEdge e3 = createEdge(hallway1, stair1, 10);
+        MapEdge e4 = createEdge(hallway1, hallway2, 3);
+        MapEdge e5 = createEdge(hallway2, stair2, 2);
+        givenGraph(List.of(room1, door1, hallway1, hallway2, stair1, stair2), List.of(e1, e2, e3, e4, e5));
+        FireProximity fireProximity = new FireProximity(Map.of(e4.getId(), 1), MEDIUM_INTERVAL_SEC);
+
+        assertThatThrownBy(() -> evacuationRouteService.findShortestRoute(
+                floorId, room1.getId(), Set.of(e3.getId(), e5.getId()), Map.of(), fireProximity))
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).getErrorCode())
+                .isEqualTo(EvacuationErrorCode.EVACUATION_ROUTE_NOT_FOUND);
+    }
+
+    @Test
+    @DisplayName("2세대 구간은 도착 전에 불이 붙지 않으면 작은 페널티(×2)만 받아 그대로 지나간다")
+    void findShortestRoute_fireProximity_secondGeneration_arrivesBeforeIgnition() {
+        MapEdge e1 = createEdge(room1, door1, 2);
+        MapEdge e2 = createEdge(door1, hallway1, 5);
+        MapEdge e3 = createEdge(hallway1, stair1, 10);
+        MapEdge e4 = createEdge(hallway1, hallway2, 3);
+        MapEdge e5 = createEdge(hallway2, stair2, 2);
+        givenGraph(List.of(room1, door1, hallway1, hallway2, stair1, stair2), List.of(e1, e2, e3, e4, e5));
+        // e5를 다 지나는 시점: 12m / 1.2m/s = 10초 < 예상 발화 15초(보통 속도 1세대 뒤)
+        FireProximity fireProximity = new FireProximity(Map.of(e5.getId(), 2), MEDIUM_INTERVAL_SEC);
+
+        EvacuationRoute route = evacuationRouteService.findShortestRoute(
+                floorId, room1.getId(), Set.of(), Map.of(), fireProximity);
+
+        assertThat(route.path()).containsExactly(room1, door1, hallway1, hallway2, stair2);
+        assertThat(route.totalWeight()).isEqualTo(2 + 5 + 3 + 2 * 2.0);
+    }
+
+    @Test
+    @DisplayName("2세대 구간이라도 확산이 빨라 도착 전에 불이 붙으면 큰 페널티(×5)를 받아 피한다")
+    void findShortestRoute_fireProximity_secondGeneration_ignitesBeforeArrival() {
+        MapEdge e1 = createEdge(room1, door1, 2);
+        MapEdge e2 = createEdge(door1, hallway1, 5);
+        MapEdge e3 = createEdge(hallway1, stair1, 10);
+        MapEdge e4 = createEdge(hallway1, hallway2, 3);
+        MapEdge e5 = createEdge(hallway2, stair2, 2);
+        givenGraph(List.of(room1, door1, hallway1, hallway2, stair1, stair2), List.of(e1, e2, e3, e4, e5));
+        // e5를 다 지나는 시점 10초 >= 예상 발화 5초(빠른 속도 1세대 뒤)
+        FireProximity fireProximity = new FireProximity(Map.of(e5.getId(), 2), FAST_INTERVAL_SEC);
+
+        EvacuationRoute route = evacuationRouteService.findShortestRoute(
+                floorId, room1.getId(), Set.of(), Map.of(), fireProximity);
+
+        assertThat(route.path()).containsExactly(room1, door1, hallway1, stair1);
+        assertThat(route.totalWeight()).isEqualTo(17.0);
+    }
+
+    @Test
+    @DisplayName("혼잡 배율과 화재 근접 배율이 겹치면 곱해서 반영한다")
+    void findShortestRoute_fireProximity_multipliesWithCongestion() {
+        MapEdge e1 = createEdge(room1, door1, 2);
+        MapEdge e2 = createEdge(door1, hallway1, 5);
+        MapEdge e3 = createEdge(hallway1, stair1, 10);
+        MapEdge e4 = createEdge(hallway1, hallway2, 3);
+        MapEdge e5 = createEdge(hallway2, stair2, 2);
+        givenGraph(List.of(room1, door1, hallway1, hallway2, stair1, stair2), List.of(e1, e2, e3, e4, e5));
+        FireProximity fireProximity = new FireProximity(Map.of(e5.getId(), 2), MEDIUM_INTERVAL_SEC);
+
+        EvacuationRoute route = evacuationRouteService.findShortestRoute(
+                floorId, room1.getId(), Set.of(), Map.of(e5.getId(), 1.5), fireProximity);
+
+        // e5 = 2 × 1.5(CAUTION) × 2(불 옆) = 6 -> 2+5+3+6 = 16 (max였다면 2×2 = 4 -> 14)
+        assertThat(route.path()).containsExactly(room1, door1, hallway1, hallway2, stair2);
+        assertThat(route.totalWeight()).isEqualTo(16.0);
+    }
+
+    @Test
+    @DisplayName("화재 근접 가중치가 있어도 엣지 조회 순서와 무관하게 같은 경로를 반환한다")
+    void findShortestRoute_fireProximity_deterministicRegardlessOfEdgeOrder() {
+        // room1 -> hallway1 -> door1 와 room1 -> hallway2 -> door1 은 비용이 같지만(4+1, 2×2+1)
+        // 실제로 걸은 거리가 달라(5m, 3m) 그 뒤 2세대 구간(door1 -> stair1)의 도착 시점 판정이 갈린다.
+        MapEdge toHallway1 = createEdge(room1, hallway1, 4);
+        MapEdge toHallway2 = createEdge(room1, hallway2, 2);
+        MapEdge hallway1ToDoor = createEdge(hallway1, door1, 1);
+        MapEdge hallway2ToDoor = createEdge(hallway2, door1, 1);
+        MapEdge doorToStair = createEdge(door1, stair1, 3);
+        List<MapNode> nodes = List.of(room1, hallway1, hallway2, door1, stair1);
+        List<MapEdge> edges = List.of(toHallway1, toHallway2, hallway1ToDoor, hallway2ToDoor, doorToStair);
+        FireProximity fireProximity = new FireProximity(
+                Map.of(toHallway2.getId(), 2, doorToStair.getId(), 2), 6.0);
+
+        List<MapEdge> reversed = new ArrayList<>(edges);
+        Collections.reverse(reversed);
+        given(mapGraphRepository.findNodesByFloor(floorId)).willReturn(nodes);
+        given(mapGraphRepository.findEdgesByFloor(floorId)).willReturn(edges, reversed);
+
+        EvacuationRoute forward = evacuationRouteService.findShortestRoute(
+                floorId, room1.getId(), Set.of(), Map.of(), fireProximity);
+        EvacuationRoute backward = evacuationRouteService.findShortestRoute(
+                floorId, room1.getId(), Set.of(), Map.of(), fireProximity);
+
+        assertThat(backward.path()).isEqualTo(forward.path());
+        assertThat(backward.totalWeight()).isEqualTo(forward.totalWeight());
+    }
+
+    @Test
+    @DisplayName("층 전체 다음 홉도 불 바로 옆 구간을 피하는 방향을 가리킨다")
+    void computeNextHops_fireProximity_avoidsCorridorNextToFire() {
+        MapEdge e3 = createEdge(hallway1, stair1, 10);
+        MapEdge e4 = createEdge(hallway1, hallway2, 3);
+        MapEdge e5 = createEdge(hallway2, stair2, 2);
+        givenGraph(List.of(hallway1, hallway2, stair1, stair2), List.of(e3, e4, e5));
+        FireProximity fireProximity = new FireProximity(Map.of(e5.getId(), 1), MEDIUM_INTERVAL_SEC);
+
+        Map<UUID, UUID> withoutFire = evacuationRouteService.computeNextHops(floorId, Set.of(), Map.of());
+        Map<UUID, UUID> withFire = evacuationRouteService.computeNextHops(
+                floorId, Set.of(), Map.of(), fireProximity);
+
+        assertThat(withoutFire).containsEntry(hallway1.getId(), hallway2.getId());
+        // hallway2 경유는 3 + 2×5 = 13 > 직행 10
+        assertThat(withFire).containsEntry(hallway1.getId(), stair1.getId());
+        // 다른 길이 더 비싸면(3+10=13 > 2×5=10) 불 옆이어도 그 길을 가리킨다 - 제외가 아니라 페널티
+        assertThat(withFire).containsEntry(hallway2.getId(), stair2.getId());
+    }
 }
