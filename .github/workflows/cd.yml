@@ -35,7 +35,9 @@ jobs:
     env:
       # 같은 커밋이면 build-and-push-be와 deploy 잡이 항상 같은 태그를 계산하므로
       # job outputs로 잇지 않고 각자 github.sha로부터 독립 계산한다.
-      APP_IMAGE: ghcr.io/ds-saferoute/saferoute-be:${{ github.sha }}
+      # GHCR 경로는 소문자만 허용해 github.repository_owner(2026-SafeRoute)를 그대로 쓸 수 없으므로
+      # 조직 이름을 소문자로 고정한다. 조직 이름이 바뀌면 여기와 deploy 잡의 APP_IMAGE를 함께 바꿔야 한다.
+      APP_IMAGE: ghcr.io/2026-saferoute/saferoute-be:${{ github.sha }}
 
     steps:
       - name: Checkout BE repository
@@ -95,7 +97,7 @@ jobs:
       COMPOSE_PROJECT_NAME: saferoute
       # build-and-push-be와 동일한 규칙(github.sha)으로 계산해 같은 커밋이면
       # 항상 같은 이미지를 가리키게 한다. ai-only에서는 사용되지 않는다.
-      APP_IMAGE: ghcr.io/ds-saferoute/saferoute-be:${{ github.sha }}
+      APP_IMAGE: ghcr.io/2026-saferoute/saferoute-be:${{ github.sha }}
 
     steps:
       - name: Reclaim deployment disk space
