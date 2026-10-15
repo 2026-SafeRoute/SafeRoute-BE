@@ -20,6 +20,7 @@ import com.saferoute.domain.evacuation.recalculation.entity.RouteRecalculation;
 import com.saferoute.domain.evacuation.recalculation.repository.RouteRecalculationRepository;
 import com.saferoute.domain.evacuation.service.EvacuationRoute;
 import com.saferoute.domain.evacuation.service.EvacuationRouteService;
+import com.saferoute.domain.evacuation.service.FireProximity;
 import com.saferoute.domain.training.entity.FireZone;
 import com.saferoute.domain.training.entity.TrainingScenario;
 import com.saferoute.domain.training.entity.TrainingSession;
@@ -35,6 +36,7 @@ import com.saferoute.global.api.exception.ApiException;
 import com.saferoute.global.config.AsyncConfig;
 import com.saferoute.infrastructure.websocket.service.TrainingEventPublisher;
 import java.time.Instant;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -166,6 +168,7 @@ public class RouteRecalculationService {
         // 포함) 더 이상 완전 제외하지 않고 항상 페널티로만 반영한다 - 화재/연기와 달리 실제
         // 통행 불가 사유가 아니기 때문이다(아래 mergedCongestionMultipliers 참고).
         Set<UUID> excludedEdgeIds = firedEdgeIdsForFloor(lockedSession.getScenario().getId(), floorId);
+        FireProximity fireProximity = fireProximityForFloor(lockedSession.getScenario(), floorId);
         // 혼잡 재탐색은 화재 우회와 달리 안전 기능이 아니라 최적화이므로, 층 전체 혼잡 조회(다른
         // CCTV 몫)가 실패하면 그 불완전한 정보로 계산한 후보로 기존 PENDING을 섣불리 취소/대체
         // 하지 않는다 - 빈 맵으로 조용히 진행하면 다른 CCTV의 혼잡을 반영해 만들어진 정상적인
@@ -179,7 +182,7 @@ public class RouteRecalculationService {
         EvacuationRoute candidate;
         try {
             candidate = evacuationRouteService.findShortestRoute(
-                    floorId, startNodeId, excludedEdgeIds, congestionMultipliers.get());
+                    floorId, startNodeId, excludedEdgeIds, congestionMultipliers.get(), fireProximity);
         } catch (ApiException exception) {
             if (exception.getErrorCode() == EvacuationErrorCode.EVACUATION_ROUTE_NOT_FOUND) {
                 log.warn("우회 경로를 찾을 수 없어 재탐색 승인 대기 항목을 생성하지 않음: sessionId={}, edgeId={}",
@@ -368,10 +371,12 @@ public class RouteRecalculationService {
         // 화재는 완전 제외하되, 지금 혼잡한 복도는 가중치로 피한다(제외가 아니라 페널티라 혼잡한 길밖에
         // 없어도 후보는 항상 나온다).
         Map<UUID, Double> congestionMultipliers = currentCongestionMultipliersOrEmpty(lockedSession.getId(), floorId);
+        // 곧 불이 번질 구간은 제외하지 않고 페널티만 준다 - 불 옆 복도밖에 없으면 그래도 그 길로 안내한다.
+        FireProximity fireProximity = fireProximityForFloor(lockedSession.getScenario(), floorId);
         EvacuationRoute candidate;
         try {
             candidate = evacuationRouteService.findShortestRoute(
-                    floorId, startNodeId, excludedEdgeIds, congestionMultipliers);
+                    floorId, startNodeId, excludedEdgeIds, congestionMultipliers, fireProximity);
         } catch (ApiException exception) {
             if (exception.getErrorCode() == EvacuationErrorCode.EVACUATION_ROUTE_NOT_FOUND) {
                 log.warn("화재로 막힌 구간을 피해 우회 경로를 찾을 수 없어 재탐색 승인 대기 항목을 생성하지 않음: sessionId={}",
@@ -495,20 +500,90 @@ public class RouteRecalculationService {
     // 현재 실제로 isFired=true인 셀만 화재 구간으로 인정한다(FireZone은 세션 종료 뒤에도 이력으로
     // 남을 수 있으므로 isFired 교집합 없이 FireZone만 보면 이미 꺼진 화재까지 잡힐 수 있다).
     private List<MapEdge> firedEdgesForFloor(UUID scenarioId, UUID floorId) {
+        List<UUID> firedCellIds = firedCellIdsForFloor(scenarioId, floorId);
+        if (firedCellIds.isEmpty()) {
+            return List.of();
+        }
+        return edgesOfCells(firedCellIds);
+    }
+
+    // firedEdgesForFloor와 같은 기준(그 시나리오의 FireZone ∩ 현재 isFired)으로 본 화재 셀 id 목록.
+    private List<UUID> firedCellIdsForFloor(UUID scenarioId, UUID floorId) {
         Set<UUID> scenarioFireCellIds = fireZoneRepository.findByScenario_IdAndFloor_Id(scenarioId, floorId).stream()
                 .map(FireZone::getGridCellId)
                 .collect(Collectors.toSet());
         if (scenarioFireCellIds.isEmpty()) {
             return List.of();
         }
-        List<UUID> firedCellIds = floorGridCellRepository.findAllByFloor_IdAndIsFiredTrue(floorId).stream()
+        return floorGridCellRepository.findAllByFloor_IdAndIsFiredTrue(floorId).stream()
                 .map(FloorGridCell::getId)
                 .filter(scenarioFireCellIds::contains)
                 .toList();
+    }
+
+    // 지금 화재 셀에서 확산 규칙(FireSpreadStepService와 같은 격자 상하좌우, walkable이고 아직 안 붙은 셀만)대로
+    // FireProximity.MAX_GENERATION 세대 안에 불이 붙을 셀을 구하고, 그 셀을 지나는 엣지마다 "가장 빨리 불붙는
+    // 세대"를 매긴다. 화재 셀 자체를 지나는 엣지는 excludedEdgeIds로 이미 제외되므로 여기서 뺀다.
+    // 실제 확산은 직전 세대(frontier)에서만 번지지만, 안쪽 화재 셀의 이웃은 이미 불붙었거나 걸을 수 없는
+    // 셀이라 전체 화재 셀에서 출발해도 결과가 같다.
+    private FireProximity fireProximityForFloor(TrainingScenario scenario, UUID floorId) {
+        List<UUID> firedCellIds = firedCellIdsForFloor(scenario.getId(), floorId);
         if (firedCellIds.isEmpty()) {
-            return List.of();
+            return FireProximity.NONE;
         }
-        return edgesOfCells(firedCellIds);
+        Set<UUID> firedCellIdSet = Set.copyOf(firedCellIds);
+        Map<Long, FloorGridCell> cellByPosition = new HashMap<>();
+        for (FloorGridCell cell : floorGridCellRepository.findAllByFloor_Id(floorId)) {
+            cellByPosition.put(gridPositionKey(cell.getRowIndex(), cell.getColumnIndex()), cell);
+        }
+
+        Map<UUID, Integer> generationByCellId = new HashMap<>();
+        ArrayDeque<FloorGridCell> frontier = new ArrayDeque<>();
+        for (FloorGridCell cell : cellByPosition.values()) {
+            if (firedCellIdSet.contains(cell.getId())) {
+                generationByCellId.put(cell.getId(), 0);
+                frontier.add(cell);
+            }
+        }
+        int[][] directions = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+        while (!frontier.isEmpty()) {
+            FloorGridCell cell = frontier.poll();
+            int generation = generationByCellId.get(cell.getId());
+            if (generation >= FireProximity.MAX_GENERATION) {
+                continue;
+            }
+            for (int[] direction : directions) {
+                FloorGridCell neighbor = cellByPosition.get(gridPositionKey(
+                        cell.getRowIndex() + direction[0], cell.getColumnIndex() + direction[1]));
+                if (neighbor == null || !neighbor.isWalkable() || neighbor.isFired()
+                        || generationByCellId.containsKey(neighbor.getId())) {
+                    continue;
+                }
+                generationByCellId.put(neighbor.getId(), generation + 1);
+                frontier.add(neighbor);
+            }
+        }
+        firedCellIdSet.forEach(generationByCellId::remove);
+        if (generationByCellId.isEmpty()) {
+            return FireProximity.NONE;
+        }
+
+        Set<UUID> firedEdgeIds = edgesOfCells(firedCellIds).stream().map(MapEdge::getId).collect(Collectors.toSet());
+        Map<UUID, Integer> generationByEdgeId = new HashMap<>();
+        for (MapEdgeGridCell mapping
+                : mapEdgeGridCellRepository.findAllByGridCell_IdIn(List.copyOf(generationByCellId.keySet()))) {
+            UUID edgeId = mapping.getMapEdge().getId();
+            if (firedEdgeIds.contains(edgeId)) {
+                continue;
+            }
+            generationByEdgeId.merge(edgeId, generationByCellId.get(mapping.getGridCell().getId()), Math::min);
+        }
+        double spreadIntervalSec = scenario.getFireSpreadSpeed().tickInterval().toSeconds();
+        return new FireProximity(generationByEdgeId, spreadIntervalSec);
+    }
+
+    private static long gridPositionKey(int row, int column) {
+        return ((long) row << 32) | (column & 0xFFFFFFFFL);
     }
 
     // 아직 훈련이 시작되지 않은 시나리오의 최초 발화점(관리자가 수동 지정한 셀)이 막는 MapEdge id 집합.
@@ -574,10 +649,11 @@ public class RouteRecalculationService {
         // 시나리오가 낸 화재 구간은 제외한다 - 그렇지 않으면 "정상 경로"라는 이유로 화재 구간을
         // 지나는 복구 후보를 제안할 수 있다.
         Set<UUID> excludedEdgeIds = firedEdgeIdsForFloor(session.getScenario().getId(), floorId);
+        FireProximity fireProximity = fireProximityForFloor(session.getScenario(), floorId);
         EvacuationRoute candidate;
         try {
             candidate = evacuationRouteService.findShortestRoute(
-                    floorId, startNodeId, excludedEdgeIds, congestionMultipliers.get());
+                    floorId, startNodeId, excludedEdgeIds, congestionMultipliers.get(), fireProximity);
         } catch (ApiException exception) {
             if (exception.getErrorCode() == EvacuationErrorCode.EVACUATION_ROUTE_NOT_FOUND) {
                 log.warn("화재를 피한 복구 경로를 찾을 수 없어 재탐색 승인 대기 항목을 생성하지 않음: sessionId={}, edgeId={}",
@@ -844,10 +920,12 @@ public class RouteRecalculationService {
         UUID floorId = recalculation.resolvedFloorId();
         Map<UUID, UUID> nextHops;
         try {
-            Set<UUID> excludedEdgeIds = firedEdgeIdsForFloor(
-                    recalculation.getTrainingSession().getScenario().getId(), floorId);
+            TrainingScenario scenario = recalculation.getTrainingSession().getScenario();
+            Set<UUID> excludedEdgeIds = firedEdgeIdsForFloor(scenario.getId(), floorId);
             Map<UUID, Double> congestionMultipliers = currentCongestionMultipliersOrEmpty(sessionId, floorId);
-            nextHops = evacuationRouteService.computeNextHops(floorId, excludedEdgeIds, congestionMultipliers);
+            FireProximity fireProximity = fireProximityForFloor(scenario, floorId);
+            nextHops = evacuationRouteService.computeNextHops(
+                    floorId, excludedEdgeIds, congestionMultipliers, fireProximity);
         } catch (RuntimeException exception) {
             log.warn("층 전체 다음 홉 계산에 실패해 승인된 경로 위 유도등만 반영: sessionId={}, floorId={}",
                     sessionId, floorId, exception);
