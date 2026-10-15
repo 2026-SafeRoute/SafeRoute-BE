@@ -137,6 +137,7 @@ public class FloorService {
     @Transactional
     public void deleteFloor(UUID buildingId, UUID floorId, String email) {
         Floor floor = findFloor(buildingId, floorId, email);
+        floorMapChangeGuard.validateNoRunningTraining(floor.getBuilding().getId());
         floor.getBuilding().removeFloor(floor.getFloorNum());
         floorRepository.delete(floor);
     }
