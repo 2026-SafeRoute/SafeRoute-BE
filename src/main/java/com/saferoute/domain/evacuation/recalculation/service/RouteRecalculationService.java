@@ -367,6 +367,11 @@ public class RouteRecalculationService {
             if (exception.getErrorCode() == EvacuationErrorCode.EVACUATION_ROUTE_NOT_FOUND) {
                 log.warn("화재로 막힌 구간을 피해 우회 경로를 찾을 수 없어 재탐색 승인 대기 항목을 생성하지 않음: sessionId={}",
                         lockedSession.getId());
+                // 훈련을 실패 처리하지 않고 관리자에게 한 번만 알린다(종료 판단은 관리자 몫).
+                // 이후 틱에서도 계속 막혀 있으므로 markRouteBlocked가 최초 1회만 true를 돌려준다.
+                if (lockedSession.markRouteBlocked(Instant.now())) {
+                    trainingEventPublisher.publishEvacuationRouteBlockedAfterCommit(lockedSession, floorId);
+                }
                 return;
             }
             throw exception;

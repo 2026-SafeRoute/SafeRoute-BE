@@ -6,6 +6,7 @@ import jakarta.persistence.*;
 import jakarta.validation.constraints.NotNull;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -65,6 +66,13 @@ public class TrainingSession {
     @Column(name = "current_generation", nullable = false)
     private int currentGeneration = 0;
 
+    // 화재가 번져 시작 지점에서 출구로 가는 우회 경로가 처음으로 사라진 시각. 한 번도 막히지 않았으면 null.
+    // 화재는 꺼지지 않아 한 번 막히면 다시 열리지 않으므로 최초 시각만 남긴다. 이 층 그래프 밖(아래층 계단 등)
+    // 대피 수단과 실제 사람 위치는 시스템이 모르므로 이것만으로 훈련을 실패 처리하지 않는다 - 관리자에게
+    // 알리고(EVACUATION_ROUTE_BLOCKED) 리포트에 기록하는 데만 쓴다.
+    @Column(name = "route_blocked_at")
+    private Instant routeBlockedAt;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id", nullable = false)
     private User admin;
@@ -105,6 +113,24 @@ public class TrainingSession {
     public void advanceSpread(int nextGeneration, Instant spreadAt) {
         this.currentGeneration = nextGeneration;
         this.lastSpreadAt = spreadAt;
+    }
+
+    // 처음 막힌 경우에만 시각을 남기고 true를 돌려준다. 이미 막힌 적이 있으면 아무것도 바꾸지 않는다
+    // (화재 확산 틱마다 같은 알림이 반복되지 않게 하기 위함).
+    public boolean markRouteBlocked(Instant blockedAt) {
+        if (this.routeBlockedAt != null) {
+            return false;
+        }
+        this.routeBlockedAt = blockedAt;
+        return true;
+    }
+
+    // 훈련 시작 후 경로가 막히기까지 걸린 초. 막힌 적이 없거나 시작 시각이 없으면 null.
+    public Long routeBlockedAfterSec() {
+        if (routeBlockedAt == null || startedAt == null) {
+            return null;
+        }
+        return Duration.between(startedAt, routeBlockedAt).getSeconds();
     }
 
     // 훈련 정상 종료

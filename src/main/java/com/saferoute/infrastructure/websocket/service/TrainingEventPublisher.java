@@ -12,6 +12,7 @@ import com.saferoute.infrastructure.websocket.dto.CongestionEventData;
 import com.saferoute.infrastructure.websocket.dto.CongestionEventImageUpdatedData;
 import com.saferoute.infrastructure.websocket.dto.CongestionEventReceivedData;
 import com.saferoute.infrastructure.websocket.dto.CongestionImageUpdatedData;
+import com.saferoute.infrastructure.websocket.dto.EvacuationRouteBlockedEventData;
 import com.saferoute.infrastructure.websocket.dto.FireSpreadEventData;
 import com.saferoute.infrastructure.websocket.dto.GeneralMonitoringEventReceivedData;
 import com.saferoute.infrastructure.websocket.dto.IoTLightEventMessage;
@@ -361,6 +362,26 @@ public class TrainingEventPublisher {
                 spreadGeneration,
                 newlyFired.size()
         );
+    }
+
+    // DB 트랜잭션이 실제로 커밋된 이후에만 발행 (routeBlockedAt 기록이 롤백되면 알림도 보내지 않는다)
+    public void publishEvacuationRouteBlockedAfterCommit(TrainingSession session, UUID floorId) {
+        publishAfterCommit(
+                () -> publishEvacuationRouteBlocked(session, floorId),
+                "커밋 후 대피 경로 소멸 이벤트 발행 실패: sessionId=" + session.getId()
+        );
+    }
+
+    public void publishEvacuationRouteBlocked(TrainingSession session, UUID floorId) {
+        TrainingEventMessage<EvacuationRouteBlockedEventData> message = TrainingEventMessage.of(
+                TrainingEventType.EVACUATION_ROUTE_BLOCKED,
+                session.getId(),
+                EvacuationRouteBlockedEventData.from(session, floorId)
+        );
+
+        messagingTemplate.convertAndSend(SESSION_TOPIC_PREFIX + session.getId(), message);
+
+        log.debug("대피 경로 소멸 이벤트 발행: sessionId={}, floorId={}", session.getId(), floorId);
     }
 
     private void publishAfterCommit(Runnable publish, String failureLogMessage) {

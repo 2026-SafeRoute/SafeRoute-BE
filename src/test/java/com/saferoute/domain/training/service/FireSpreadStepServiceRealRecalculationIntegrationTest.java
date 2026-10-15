@@ -99,6 +99,25 @@ class FireSpreadStepServiceRealRecalculationIntegrationTest {
         assertThat(firePending.getTriggerType()).isEqualTo(RecalculationTriggerType.FIRE_SPREAD);
         assertThat(firePending.getCctvCode()).isNull();
         assertThat(firePending.getCongestionLevel()).isNull();
+        assertThat(trainingSessionRepository.findById(sessionId).orElseThrow().getRouteBlockedAt()).isNull();
+    }
+
+    // 우회 경로가 없을 때 경로 탐색의 "경로 없음" 예외가 재탐색 트랜잭션을 rollback-only로 만들면,
+    // 화재를 지나는 PENDING 무효화와 경로 소멸 기록이 커밋 시점에 통째로 롤백된다(운영 로그의
+    // "커밋 후 화재 확산 경로 재탐색 실패"). 실제 빈과 DB로 둘 다 커밋되는지 확인한다.
+    @Test
+    void noDetour_commitsCrossingPendingCancellationAndRouteBlockedAt() {
+        UUID sessionId = transactionTemplate.execute(status -> createRunningSessionWithoutDetour());
+
+        fireSpreadStepService.spreadOneStep(sessionId);
+
+        List<RouteRecalculation> recalculations =
+                routeRecalculationRepository.findAllByTrainingSession_IdOrderByRequestedAtDesc(sessionId);
+        assertThat(recalculations).hasSize(1);
+        assertThat(recalculations.get(0).getStatus()).isEqualTo(RecalculationStatus.CANCELLED);
+
+        TrainingSession session = trainingSessionRepository.findById(sessionId).orElseThrow();
+        assertThat(session.getRouteBlockedAt()).isNotNull();
     }
 
     private UUID createRunningSessionWithDetourableFire() {
@@ -155,6 +174,52 @@ class FireSpreadStepServiceRealRecalculationIntegrationTest {
         // 새로 옮겨붙여야(newlyFired) triggerForFireSpread 트리거 경로 자체가 실행된다.
         // firedCell(0,0)은 이미 발화 상태라 이번 틱엔 다시 옮겨붙지 않지만(중복 방지),
         // 누적 화재 셀 조회에는 여전히 포함된다.
+        FloorGridCell originCell = floorGridCellRepository.save(
+                FloorGridCell.create(floor, 0, 1, true, 0.35, 0.5));
+        floorGridCellRepository.save(
+                FloorGridCell.create(floor, 0, 2, true, 0.4, 0.5));
+        fireZoneRepository.save(FireZone.createOrigin(scenario, floor, originCell));
+
+        return session.getId();
+    }
+
+    // 출구가 하나뿐이고 그 출구로 가는 유일한 엣지가 이미 화재 구간이라 우회 경로가 없는 세션.
+    // 기존 PENDING은 그 화재 엣지를 지나도록 둬서, 새 후보가 없어도 무효화돼야 하는 경우를 만든다.
+    private UUID createRunningSessionWithoutDetour() {
+        Building building = buildingRepository.save(Building.create(
+                "경로 소멸 테스트 건물", "부산광역시 해운대구 우동 123-46", BuildingType.CLASSROOM, SCHOOL_NAME));
+        Floor floor = Floor.create(building, 1);
+        floor.upload(3.0, 4.0, "floors/fire-blocked.png");
+        floorRepository.save(floor);
+
+        MapNode start = mapNodeRepository.save(MapNode.create(
+                floor, "START", NodeType.HALLWAY, "출발", 0.5, 0.5, false));
+        MapNode exit = mapNodeRepository.save(MapNode.create(
+                floor, "EXIT", NodeType.EXIT, "출구", 0.1, 0.5, true));
+        MapEdge onlyEdge = mapEdgeRepository.save(MapEdge.create(floor, start, exit, 1.0, true));
+
+        FloorGridCell firedCell = floorGridCellRepository.save(
+                FloorGridCell.create(floor, 0, 0, true, 0.3, 0.5));
+        firedCell.markFired();
+        floorGridCellRepository.save(firedCell);
+        mapEdgeGridCellRepository.save(MapEdgeGridCell.create(onlyEdge, firedCell));
+
+        User admin = userRepository.save(User.create(
+                "fire-blocked-admin", "password", "fire-blocked@saferoute.com", UserRole.MANAGER, SCHOOL_NAME));
+        TrainingScenario scenario = trainingScenarioRepository.save(TrainingScenario.create(
+                "경로 소멸 테스트 시나리오", 10, Instant.now(), false, FireSpreadSpeed.FAST, building, admin, start));
+        fireZoneRepository.save(FireZone.createOrigin(scenario, floor, firedCell));
+
+        TrainingSession session = TrainingSession.create(
+                TrainingStatus.RUNNING, Instant.now().minusSeconds(30), admin, scenario);
+        trainingSessionRepository.save(session);
+
+        routeRecalculationRepository.save(RouteRecalculation.createPending(
+                session, onlyEdge, "CCTV_BLOCKED", RecalculationTriggerType.STARTED,
+                com.saferoute.domain.congestion.entity.CongestionLevel.CROWDED, 3.5,
+                List.of(UUID.randomUUID()), 10.0, List.of(start.getId(), exit.getId()), 12.5));
+
+        // 이번 틱에 (0,2)로 새로 옮겨붙어야 재탐색이 트리거된다 (위 픽스처와 같은 이유).
         FloorGridCell originCell = floorGridCellRepository.save(
                 FloorGridCell.create(floor, 0, 1, true, 0.35, 0.5));
         floorGridCellRepository.save(

@@ -852,6 +852,37 @@ class RouteRecalculationServiceTest {
     }
 
     @Test
+    @DisplayName("우회 경로가 처음 사라지면 세션에 소멸 시각을 남기고 경로 소멸 알림을 보낸다")
+    void triggerForFireSpread_noDetourFirstTime_marksBlockedAndPublishes() {
+        givenNoExistingPending();
+        givenNoApprovedHistory();
+        givenDirectRouteCrossesTriggerEdge();
+        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any()))
+                .willThrow(new ApiException(EvacuationErrorCode.EVACUATION_ROUTE_NOT_FOUND));
+        given(session.markRouteBlocked(any())).willReturn(true);
+
+        routeRecalculationService.triggerForFireSpread(session, List.of(triggerEdge));
+
+        verify(session).markRouteBlocked(any());
+        verify(trainingEventPublisher).publishEvacuationRouteBlockedAfterCommit(session, floorId);
+    }
+
+    @Test
+    @DisplayName("이미 경로 소멸을 알린 세션이면 다음 틱에서 같은 알림을 다시 보내지 않는다")
+    void triggerForFireSpread_noDetourAlreadyBlocked_doesNotPublishAgain() {
+        givenNoExistingPending();
+        givenNoApprovedHistory();
+        givenDirectRouteCrossesTriggerEdge();
+        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any()))
+                .willThrow(new ApiException(EvacuationErrorCode.EVACUATION_ROUTE_NOT_FOUND));
+        given(session.markRouteBlocked(any())).willReturn(false);
+
+        routeRecalculationService.triggerForFireSpread(session, List.of(triggerEdge));
+
+        verify(trainingEventPublisher, never()).publishEvacuationRouteBlockedAfterCommit(any(), any());
+    }
+
+    @Test
     @DisplayName("현재 활성 경로가 화재 구간과 무관하면 우회 경로를 다시 계산하지 않는다")
     void triggerForFireSpread_skipsWhenActiveRouteDoesNotCrossFire() {
         // 승인된 혼잡 우회 경로 D가 활성 상태이고, 그 경로는 이번 화재 엣지(triggerEdge)와 무관하다.
