@@ -93,6 +93,7 @@ class TrainingReportServiceTest {
         String reportId = "abc123XYZ0";
         TrainingReport report = mock(TrainingReport.class);
         given(report.getShortId()).willReturn(reportId);
+        given(report.getTrainingSession()).willReturn(mock(TrainingSession.class));
         given(report.getCumulativeEvacuationPoints()).willReturn(Collections.emptyList());
         given(report.getZoneDensityPoints()).willReturn(Collections.emptyList());
         given(report.getRecentEvacuationPoints()).willReturn(Collections.emptyList());
