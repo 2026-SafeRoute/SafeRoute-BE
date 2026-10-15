@@ -1,5 +1,6 @@
 package com.saferoute.domain.device.service;
 
+import com.saferoute.domain.floor.service.FloorMapChangeGuard;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -63,6 +64,9 @@ class IoTLightServiceTest {
 
     private static final String EMAIL = "manager@saferoute.com";
     private static final String SCHOOL_NAME = "SafeRoute School";
+
+    @Mock
+    private FloorMapChangeGuard floorMapChangeGuard;
 
     @InjectMocks
     private IoTLightService iotLightService;
@@ -142,6 +146,83 @@ class IoTLightServiceTest {
         IoTLight light = IoTLight.create(code, code, customNode);
         ReflectionTestUtils.setField(light, "id", UUID.randomUUID());
         return light;
+    }
+
+    // === 훈련 중 변경 차단 (이슈 #282) ===
+
+    @Test
+    @DisplayName("훈련이 진행 중인 건물이면 유도등을 등록하지 않고 FLOOR004를 던진다")
+    void createLight_whileTrainingRunning_throws() {
+        CreateIoTLightRequest request = new CreateIoTLightRequest(floorId, "복도1 유도등", 0.3, 0.4);
+        given(floorRepository.findByIdAndBuilding_SchoolName(floorId, SCHOOL_NAME)).willReturn(Optional.of(floor));
+        org.mockito.BDDMockito.willThrow(new ApiException(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING))
+                .given(floorMapChangeGuard)
+                .validateNoRunningTraining(org.mockito.ArgumentMatchers.<Floor>any());
+
+        assertThatThrownBy(() -> iotLightService.createLight(request, EMAIL))
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).getErrorCode())
+                .isEqualTo(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING);
+        verify(mapNodeJpaRepository, never()).save(any());
+        verify(iotLightJpaRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("훈련이 진행 중인 건물이면 유도등 이름·위치를 수정하지 않고 FLOOR004를 던진다")
+    void updateLight_whileTrainingRunning_throws() {
+        MapNode customNode = createNode("LIGHT_010", NodeType.CUSTOM);
+        IoTLight light = createLight("LIGHT_010", customNode);
+        given(iotLightJpaRepository.findByIdAndCustomNode_Floor_Building_SchoolName(light.getId(), SCHOOL_NAME))
+                .willReturn(Optional.of(light));
+        org.mockito.BDDMockito.willThrow(new ApiException(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING))
+                .given(floorMapChangeGuard)
+                .validateNoRunningTraining(org.mockito.ArgumentMatchers.<Floor>any());
+
+        assertThatThrownBy(() -> iotLightService.updateLight(
+                light.getId(), new UpdateIoTLightRequest("변경된 이름", 0.7, 0.8), EMAIL))
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).getErrorCode())
+                .isEqualTo(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING);
+        assertThat(light.getName()).isEqualTo("LIGHT_010");
+    }
+
+    @Test
+    @DisplayName("훈련이 진행 중인 건물이면 유도등 안내 설정을 바꾸지 않고 FLOOR004를 던진다")
+    void configureGuidance_whileTrainingRunning_throws() {
+        MapNode customNode = createNode("LIGHT_011", NodeType.CUSTOM);
+        IoTLight light = createLight("LIGHT_011", customNode);
+        given(iotLightJpaRepository.findByIdAndCustomNode_Floor_Building_SchoolName(light.getId(), SCHOOL_NAME))
+                .willReturn(Optional.of(light));
+        org.mockito.BDDMockito.willThrow(new ApiException(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING))
+                .given(floorMapChangeGuard)
+                .validateNoRunningTraining(org.mockito.ArgumentMatchers.<Floor>any());
+
+        ConfigureGuidanceRequest request =
+                new ConfigureGuidanceRequest(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+        assertThatThrownBy(() -> iotLightService.configureGuidance(light.getId(), request, EMAIL))
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).getErrorCode())
+                .isEqualTo(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING);
+        assertThat(light.isGuidanceConfigured()).isFalse();
+    }
+
+    @Test
+    @DisplayName("훈련이 진행 중인 건물이면 유도등에 CCTV를 배정하지 않고 FLOOR004를 던진다")
+    void assignCctv_whileTrainingRunning_throws() {
+        MapNode customNode = createNode("LIGHT_012", NodeType.CUSTOM);
+        IoTLight light = createLight("LIGHT_012", customNode);
+        given(iotLightJpaRepository.findByIdAndCustomNode_Floor_Building_SchoolName(light.getId(), SCHOOL_NAME))
+                .willReturn(Optional.of(light));
+        org.mockito.BDDMockito.willThrow(new ApiException(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING))
+                .given(floorMapChangeGuard)
+                .validateNoRunningTraining(org.mockito.ArgumentMatchers.<Floor>any());
+
+        assertThatThrownBy(() -> iotLightService.assignCctv(
+                light.getId(), new AssignCctvRequest(UUID.randomUUID()), EMAIL))
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).getErrorCode())
+                .isEqualTo(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING);
+        assertThat(light.getCctv()).isNull();
     }
 
     // === createLight ===
@@ -427,6 +508,25 @@ class IoTLightServiceTest {
         // then
         verify(mapEdgeJpaRepository).deleteByFromNode_IdOrToNode_Id(customNode.getId(), customNode.getId());
         verify(mapNodeJpaRepository).delete(customNode);
+    }
+
+    @Test
+    @DisplayName("훈련이 진행 중인 건물이면 유도등을 삭제하지 않고 FLOOR004를 던진다")
+    void deleteLight_whileTrainingRunning_throwsAndKeepsLight() {
+        MapNode customNode = createNode("LIGHT_002", NodeType.CUSTOM);
+        IoTLight light = createLight("LIGHT_002", customNode);
+        given(iotLightJpaRepository.findByIdAndCustomNode_Floor_Building_SchoolName(light.getId(), SCHOOL_NAME))
+                .willReturn(Optional.of(light));
+        org.mockito.BDDMockito.willThrow(new ApiException(
+                        com.saferoute.global.api.error.FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING))
+                .given(floorMapChangeGuard)
+                .validateNoRunningTraining(org.mockito.ArgumentMatchers.<com.saferoute.domain.floor.entity.Floor>any());
+
+        assertThatThrownBy(() -> iotLightService.deleteLight(light.getId(), EMAIL))
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).getErrorCode())
+                .isEqualTo(com.saferoute.global.api.error.FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING);
+        org.mockito.Mockito.verify(mapNodeJpaRepository, org.mockito.Mockito.never()).delete(any());
     }
 
     @Test

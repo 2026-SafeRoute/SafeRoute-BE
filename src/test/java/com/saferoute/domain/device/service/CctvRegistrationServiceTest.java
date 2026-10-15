@@ -1,5 +1,6 @@
 package com.saferoute.domain.device.service;
 
+import com.saferoute.domain.floor.service.FloorMapChangeGuard;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -19,6 +20,7 @@ import com.saferoute.domain.evacuation.grid.repository.FloorGridCellRepository;
 import com.saferoute.domain.floor.entity.Floor;
 import com.saferoute.domain.floor.repository.FloorRepository;
 import com.saferoute.global.api.error.CctvErrorCode;
+import com.saferoute.global.api.error.FloorErrorCode;
 import com.saferoute.global.api.exception.ApiException;
 import com.saferoute.global.security.DeviceTokenService;
 import java.util.List;
@@ -42,6 +44,7 @@ class CctvRegistrationServiceTest {
     @Mock FloorRepository floorRepository;
     @Mock DeviceTokenService deviceTokenService;
     @Mock CongestionConfigService congestionConfigService;
+    @Mock FloorMapChangeGuard floorMapChangeGuard;
 
     private CctvRegistrationService service;
     private Floor floor;
@@ -56,12 +59,31 @@ class CctvRegistrationServiceTest {
                 mapNodeJpaRepository,
                 floorRepository,
                 deviceTokenService,
-                congestionConfigService
+                congestionConfigService,
+                floorMapChangeGuard
         );
         floor = org.mockito.Mockito.mock(Floor.class);
         floorId = UUID.randomUUID();
-        given(floor.getId()).willReturn(floorId);
-        given(floor.getGridCellSizeMeter()).willReturn(0.5);
+        // 훈련 중 등록 거부 테스트는 이 값들을 읽기 전에 끝나므로 lenient로 둔다.
+        org.mockito.Mockito.lenient().when(floor.getId()).thenReturn(floorId);
+        org.mockito.Mockito.lenient().when(floor.getGridCellSizeMeter()).thenReturn(0.5);
+    }
+
+    @Test
+    @DisplayName("훈련이 진행 중인 건물이면 CCTV를 등록하지 않고 FLOOR004를 던진다")
+    void register_whileTrainingRunning_throws() {
+        CreateCctvRequest request = request(List.of(UUID.randomUUID()));
+        given(floorRepository.findById(floorId)).willReturn(Optional.of(floor));
+        org.mockito.BDDMockito.willThrow(new ApiException(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING))
+                .given(floorMapChangeGuard)
+                .validateNoRunningTraining(org.mockito.ArgumentMatchers.<Floor>any());
+
+        assertThatThrownBy(() -> service.register(request, "CCTV_099"))
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).getErrorCode())
+                .isEqualTo(FloorErrorCode.FLOOR_LOCKED_BY_RUNNING_TRAINING);
+        verify(mapNodeJpaRepository, never()).save(any());
+        verify(cctvJpaRepository, never()).save(any());
     }
 
     @Test

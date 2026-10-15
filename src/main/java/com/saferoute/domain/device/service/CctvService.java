@@ -14,6 +14,7 @@ import com.saferoute.domain.congestion.service.CongestionConfigService;
 import com.saferoute.domain.evacuation.grid.entity.FloorGridCell;
 import com.saferoute.domain.evacuation.grid.repository.FloorGridCellRepository;
 import com.saferoute.domain.floor.entity.Floor;
+import com.saferoute.domain.floor.service.FloorMapChangeGuard;
 import com.saferoute.global.api.error.CctvErrorCode;
 import com.saferoute.global.api.error.DeviceErrorCode;
 import com.saferoute.global.api.exception.ApiException;
@@ -43,6 +44,7 @@ public class CctvService {
     private final DeviceTokenService deviceTokenService;
     private final CongestionConfigService congestionConfigService;
     private final SchoolContextService schoolContextService;
+    private final FloorMapChangeGuard floorMapChangeGuard;
 
     public CctvRegistrationResponse createCctv(CreateCctvRequest request) {
         return cctvRegistrationService.register(request, cctvCodeAllocator.allocate());
@@ -107,6 +109,7 @@ public class CctvService {
             String email
     ) {
         Cctv cctv = findCctvForSchoolOrThrow(cctvId, email);
+        validateNoRunningTraining(cctv);
         Floor floor = cctv.getCustomNode().getFloor();
         validateGridConfigured(floor);
         List<FloorGridCell> gridCells = findAndValidateGridCells(
@@ -128,6 +131,7 @@ public class CctvService {
     @Transactional
     public CctvResponse updateCctv(UUID cctvId, UpdateCctvRequest request, String email) {
         Cctv cctv = findCctvForSchoolOrThrow(cctvId, email);
+        validateNoRunningTraining(cctv);
         cctv.rename(request.name());
         cctv.getCustomNode().moveTo(request.x(), request.y());
         return toResponse(cctv);
@@ -150,6 +154,7 @@ public class CctvService {
     @Transactional
     public void deleteCctv(UUID cctvId, String email) {
         Cctv cctv = findCctvForSchoolOrThrow(cctvId, email);
+        validateNoRunningTraining(cctv);
         cctv.delete();
     }
 
@@ -212,4 +217,10 @@ public class CctvService {
                 .orElseThrow(() -> new ApiException(CctvErrorCode.CCTV_NOT_FOUND));
     }
 
+    // 훈련 중 CCTV 위치·감시 구역이 바뀌거나 CCTV가 사라지면 혼잡이 반영되는 엣지와 모니터링 대상이 훈련 도중
+    // 달라진다. 도면 변경과 같은 기준(FloorMapChangeGuard)으로 막는다. 활성화/비활성화·토큰 재발급은 훈련 중
+    // 고장 대응에 필요하므로 막지 않는다.
+    private void validateNoRunningTraining(Cctv cctv) {
+        floorMapChangeGuard.validateNoRunningTraining(cctv.getCustomNode().getFloor());
+    }
 }

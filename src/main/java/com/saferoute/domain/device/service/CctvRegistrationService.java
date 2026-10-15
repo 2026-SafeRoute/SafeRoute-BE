@@ -15,6 +15,7 @@ import com.saferoute.domain.evacuation.grid.entity.FloorGridCell;
 import com.saferoute.domain.evacuation.grid.repository.FloorGridCellRepository;
 import com.saferoute.domain.floor.entity.Floor;
 import com.saferoute.domain.floor.repository.FloorRepository;
+import com.saferoute.domain.floor.service.FloorMapChangeGuard;
 import com.saferoute.global.api.error.CctvErrorCode;
 import com.saferoute.global.api.error.FloorErrorCode;
 import com.saferoute.global.api.exception.ApiException;
@@ -40,6 +41,7 @@ public class CctvRegistrationService {
     private final FloorRepository floorRepository;
     private final DeviceTokenService deviceTokenService;
     private final CongestionConfigService congestionConfigService;
+    private final FloorMapChangeGuard floorMapChangeGuard;
 
     // MapNode/Cctv/매핑 저장은 하나의 트랜잭션으로 처리한다.
     // CCTV 코드는 호출 전에 독립 트랜잭션의 DB sequence로 이미 발급된다.
@@ -47,6 +49,8 @@ public class CctvRegistrationService {
     public CctvRegistrationResponse register(CreateCctvRequest request, String code) {
         Floor floor = floorRepository.findById(request.floorId())
                 .orElseThrow(() -> new ApiException(FloorErrorCode.FLOOR_NOT_FOUND));
+        // 훈련 중에는 새 CCTV(도면 노드·감시 구역)를 추가하지 않는다 (CctvService의 수정·삭제와 같은 기준).
+        floorMapChangeGuard.validateNoRunningTraining(floor);
         validateGridConfigured(floor);
         List<FloorGridCell> gridCells = findAndValidateGridCells(
                 floor.getId(), request.gridCellIds());

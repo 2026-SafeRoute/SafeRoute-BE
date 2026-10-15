@@ -23,6 +23,7 @@ import com.saferoute.domain.evacuation.graph.repository.MapEdgeJpaRepository;
 import com.saferoute.domain.evacuation.graph.repository.MapNodeJpaRepository;
 import com.saferoute.domain.floor.entity.Floor;
 import com.saferoute.domain.floor.repository.FloorRepository;
+import com.saferoute.domain.floor.service.FloorMapChangeGuard;
 import com.saferoute.domain.telemetry.dynamo.entity.LightDirectionEventItem;
 import com.saferoute.domain.telemetry.dynamo.repository.LightDirectionEventRepository;
 import com.saferoute.domain.training.entity.TrainingSession;
@@ -62,12 +63,14 @@ public class IoTLightService {
     private final SchoolContextService schoolContextService;
     private final TrainingSessionRepository trainingSessionRepository;
     private final LightDirectionEventRepository lightDirectionEventRepository;
+    private final FloorMapChangeGuard floorMapChangeGuard;
 
     @Transactional
     public IoTLightResponse createLight(CreateIoTLightRequest request, String email) {
         String schoolName = schoolContextService.getSchoolName(email);
         Floor floor = floorRepository.findByIdAndBuilding_SchoolName(request.floorId(), schoolName)
                 .orElseThrow(() -> new ApiException(FloorErrorCode.FLOOR_NOT_FOUND));
+        validateNoRunningTraining(floor);
 
         // 유도등 code는 기기가 보고하는 시리얼이 아니라 서버가 등록 시점에 채번하는 식별자다 (예: LIGHT_001).
         // IoTLightCodeAllocator가 별도 트랜잭션의 DB sequence로 원자적으로 발급한다
@@ -110,6 +113,7 @@ public class IoTLightService {
             UUID lightId, ConfigureGuidanceRequest request, String email) {
         String schoolName = schoolContextService.getSchoolName(email);
         IoTLight light = findLightForSchoolNameOrThrow(lightId, schoolName);
+        validateNoRunningTraining(light.getCustomNode().getFloor());
 
         // leftEdge/rightEdge가 같은 엣지면 IoTLight.configureGuidance()가 IllegalArgumentException을
         // 던지는데 GlobalExceptionHandler가 이를 500으로 처리하므로 여기서 먼저 ApiException으로 막는다.
@@ -137,6 +141,7 @@ public class IoTLightService {
     @Transactional
     public IoTLightResponse updateLight(UUID lightId, UpdateIoTLightRequest request, String email) {
         IoTLight light = findLightForSchoolOrThrow(lightId, email);
+        validateNoRunningTraining(light.getCustomNode().getFloor());
         light.rename(request.name());
         light.getCustomNode().moveTo(request.x(), request.y());
         return IoTLightResponse.from(light);
@@ -156,6 +161,7 @@ public class IoTLightService {
     public IoTLightResponse assignCctv(UUID lightId, AssignCctvRequest request, String email) {
         String schoolName = schoolContextService.getSchoolName(email);
         IoTLight light = findLightForSchoolNameOrThrow(lightId, schoolName);
+        validateNoRunningTraining(light.getCustomNode().getFloor());
         Cctv cctv = cctvJpaRepository
                 .findByIdAndCustomNode_Floor_Building_SchoolName(request.cctvId(), schoolName)
                 .orElseThrow(() -> new ApiException(CctvErrorCode.CCTV_NOT_FOUND));
@@ -183,6 +189,7 @@ public class IoTLightService {
     public void deleteLight(UUID lightId, String email) {
         IoTLight light = findLightForSchoolOrThrow(lightId, email);
         MapNode customNode = light.getCustomNode();
+        validateNoRunningTraining(customNode.getFloor());
         mapEdgeJpaRepository.deleteByFromNode_IdOrToNode_Id(customNode.getId(), customNode.getId());
         mapNodeJpaRepository.delete(customNode);
     }
@@ -352,5 +359,12 @@ public class IoTLightService {
         if (!connected) {
             throw new ApiException(IoTLightErrorCode.INVALID_GUIDANCE_EDGE);
         }
+    }
+
+    // 훈련 중 기기 구성(노드 위치, 안내 설정, 명령을 받아 갈 Pi)이 바뀌면 안내·경로 이탈 판정이 어긋난다.
+    // 도면 변경과 같은 기준(FloorMapChangeGuard)으로 막는다. 활성화/비활성화·Pi 주소·방향 변경은 훈련 중
+    // 고장 대응이나 운영 자체에 필요하므로 막지 않는다.
+    private void validateNoRunningTraining(Floor floor) {
+        floorMapChangeGuard.validateNoRunningTraining(floor);
     }
 }
