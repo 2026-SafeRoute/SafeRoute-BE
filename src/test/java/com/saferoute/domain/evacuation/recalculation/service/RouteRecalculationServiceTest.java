@@ -482,7 +482,8 @@ class RouteRecalculationServiceTest {
         ReflectionTestUtils.setField(exitNode, "id", UUID.randomUUID());
         given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any()))
                 .willReturn(new EvacuationRoute(List.of(exitNode), 12.5));
-        given(routeRecalculationRepository.save(any())).willReturn(pendingRecalculation(CongestionLevel.CROWDED));
+        RouteRecalculation savedPending = pendingRecalculation(CongestionLevel.CROWDED);
+        given(routeRecalculationRepository.save(any())).willReturn(savedPending);
 
         routeRecalculationService.trigger(session, List.of(triggerEdge), CongestionLevel.CROWDED,
                 RecalculationTriggerType.STARTED, "CCTV_001", 3.5);
@@ -636,7 +637,8 @@ class RouteRecalculationServiceTest {
         given(currentCongestionWeightProvider.currentMultipliers(any(), eq(floorId), eq(Set.of("CCTV_001"))))
                 .willReturn(Map.of(stillCongestedEdgeId, 3.0));
         givenEndedCandidate(routeOf(12.5, UUID.randomUUID()));
-        given(routeRecalculationRepository.save(any())).willReturn(pendingRecalculation(CongestionLevel.NORMAL));
+        RouteRecalculation savedPending = pendingRecalculation(CongestionLevel.NORMAL);
+        given(routeRecalculationRepository.save(any())).willReturn(savedPending);
 
         routeRecalculationService.trigger(session, List.of(triggerEdge), CongestionLevel.NORMAL,
                 RecalculationTriggerType.ENDED, "CCTV_001", 1.0);
@@ -1069,7 +1071,8 @@ class RouteRecalculationServiceTest {
         ReflectionTestUtils.setField(exitNode, "id", UUID.randomUUID());
         given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any()))
                 .willReturn(new EvacuationRoute(List.of(exitNode), 12.5));
-        given(routeRecalculationRepository.save(any())).willReturn(pendingRecalculation(CongestionLevel.CROWDED));
+        RouteRecalculation savedPending = pendingRecalculation(CongestionLevel.CROWDED);
+        given(routeRecalculationRepository.save(any())).willReturn(savedPending);
 
         routeRecalculationService.triggerAsync(session, List.of(triggerEdge.getId(), secondEdgeId),
                 CongestionLevel.CROWDED, RecalculationTriggerType.LEVEL_UP, "CCTV_001", 3.5,
@@ -1152,6 +1155,43 @@ class RouteRecalculationServiceTest {
         verify(trainingEventPublisher).publishRouteRecalculationCancelledAfterCommit(recalculation);
         verify(ioTLightService, never()).applyFloorGuidance(any(), any(), any());
         verify(trainingEventPublisher, never()).publishEvacuationRouteUpdatedAfterCommit(any());
+    }
+
+    @Test
+    @DisplayName("도면 변경으로 트리거 엣지가 지워진 PENDING은 승인하지 않고 무효화한 뒤 ROUTE_RECALCULATION_GRAPH_CHANGED를 던진다")
+    void approve_whenTriggerEdgeDeletedByMapChange_cancelsAndThrows() {
+        RouteRecalculation recalculation = RouteRecalculation.createPending(
+                session, triggerEdge, "CCTV_001", RecalculationTriggerType.STARTED, CongestionLevel.CROWDED, 3.5,
+                List.of(UUID.randomUUID()), 10.0, List.of(UUID.randomUUID()), 12.5);
+        ReflectionTestUtils.setField(recalculation, "id", UUID.randomUUID());
+        // DB의 ON DELETE SET NULL이 적용된 상태를 흉내낸다.
+        ReflectionTestUtils.setField(recalculation, "triggerEdge", null);
+        given(routeRecalculationRepository
+                .findByIdAndTrainingSession_Scenario_Building_SchoolName(
+                        recalculation.getId(), SCHOOL_NAME)).willReturn(Optional.of(recalculation));
+
+        assertThatThrownBy(() -> routeRecalculationService.approve(recalculation.getId(), MANAGER_EMAIL))
+                .isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("errorCode", EvacuationErrorCode.ROUTE_RECALCULATION_GRAPH_CHANGED);
+
+        assertThat(recalculation.getStatus()).isEqualTo(RecalculationStatus.CANCELLED);
+        verify(trainingEventPublisher).publishRouteRecalculationCancelledAfterCommit(recalculation);
+        verify(ioTLightService, never()).applyFloorGuidance(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("트리거 엣지가 지워져도 재계산 이력은 생성 시점에 저장한 층 정보로 조회된다")
+    void summaryResponse_triggerEdgeDeleted_usesStoredFloor() {
+        RouteRecalculation recalculation = RouteRecalculation.createPending(
+                session, triggerEdge, "CCTV_001", RecalculationTriggerType.STARTED, CongestionLevel.CROWDED, 3.5,
+                List.of(UUID.randomUUID()), 10.0, List.of(UUID.randomUUID()), 12.5);
+        ReflectionTestUtils.setField(recalculation, "triggerEdge", null);
+
+        var summary = com.saferoute.domain.evacuation.recalculation.dto.response.RouteRecalculationSummaryResponse
+                .from(recalculation);
+
+        assertThat(summary.floorId()).isEqualTo(floorId);
+        assertThat(summary.triggerEdgeId()).isNull();
     }
 
     private MapNode withId(UUID id) {
@@ -1343,6 +1383,25 @@ class RouteRecalculationServiceTest {
         assertThat(response.path().get(2).type()).isEqualTo(NodeType.EXIT);
         assertThat(response.totalWeight()).isEqualTo(18.3);
         assertThat(response.updatedAt()).isEqualTo(approved.getResolvedAt());
+    }
+
+    @Test
+    @DisplayName("승인된 경로의 노드가 도면 변경으로 지워졌으면 현재 경로 조회에서 그 노드만 건너뛴다")
+    void getCurrentRoute_approvedPathHasDeletedNode_skipsMissingNode() {
+        UUID recSessionId = session.getId();
+        given(trainingSessionRepository.findByIdAndScenario_Building_SchoolName(recSessionId, SCHOOL_NAME))
+                .willReturn(Optional.of(session));
+        UUID deletedNodeId = UUID.randomUUID();
+        List<UUID> recalculatedIds = List.of(startNodeId, deletedNodeId);
+        RouteRecalculation approved = approvedRecalculation(recalculatedIds, 18.3);
+        given(routeRecalculationRepository.findFirstByTrainingSession_IdAndStatusOrderByResolvedAtDesc(
+                recSessionId, RecalculationStatus.APPROVED))
+                .willReturn(Optional.of(approved));
+        given(mapNodeJpaRepository.findAllById(recalculatedIds)).willReturn(List.of(representativeStart));
+
+        CurrentRouteResponse response = routeRecalculationService.getCurrentRoute(recSessionId, MANAGER_EMAIL);
+
+        assertThat(response.path()).extracting(CurrentRouteResponse.NodePoint::nodeId).containsExactly(startNodeId);
     }
 
     @Test

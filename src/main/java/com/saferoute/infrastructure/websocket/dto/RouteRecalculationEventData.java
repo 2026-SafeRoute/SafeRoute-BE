@@ -26,7 +26,7 @@ public record RouteRecalculationEventData(
                 : recalculation.getCancelReason();
         return new RouteRecalculationEventData(
                 recalculation.getId(),
-                recalculation.getTriggerEdge().getId(),
+                recalculation.triggerEdgeIdOrNull(),
                 recalculation.getTriggerType(),
                 recalculation.getCongestionLevel(),
                 recalculation.getRecalculatedNodeIds(),
