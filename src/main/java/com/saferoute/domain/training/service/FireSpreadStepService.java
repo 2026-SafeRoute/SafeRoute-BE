@@ -6,7 +6,6 @@ import com.saferoute.domain.evacuation.grid.entity.MapEdgeGridCell;
 import com.saferoute.domain.evacuation.grid.repository.FloorGridCellRepository;
 import com.saferoute.domain.evacuation.grid.repository.MapEdgeGridCellRepository;
 import com.saferoute.domain.evacuation.recalculation.service.RouteRecalculationService;
-import com.saferoute.domain.training.entity.FireSpreadSpeed;
 import com.saferoute.domain.training.entity.FireZone;
 import com.saferoute.domain.training.entity.TrainingSession;
 import com.saferoute.domain.training.repository.FireZoneRepository;
@@ -43,7 +42,7 @@ public class FireSpreadStepService {
     public void spreadOneStep(UUID sessionId) {
         TrainingSession session = sessionRepository.getReferenceById(sessionId);
 
-        Duration interval = tickIntervalOf(session.getScenario().getFireSpreadSpeed());
+        Duration interval = session.getScenario().getFireSpreadSpeed().tickInterval();
 
         Instant lastSpreadAt = session.getLastSpreadAt() != null ? session.getLastSpreadAt() : session.getStartedAt();
         if (Duration.between(lastSpreadAt, Instant.now()).compareTo(interval) < 0) {
@@ -149,13 +148,5 @@ public class FireSpreadStepService {
                 routeRecalculationService.triggerForFireSpread(session, affectedEdges);
             }
         }
-    }
-
-    private Duration tickIntervalOf(FireSpreadSpeed speed) {
-        return switch (speed) {
-            case FAST -> Duration.ofSeconds(5);
-            case MEDIUM -> Duration.ofSeconds(15);
-            case SLOW -> Duration.ofSeconds(30);
-        };
     }
 }
