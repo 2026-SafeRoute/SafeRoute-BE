@@ -45,6 +45,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.hibernate.Hibernate;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -673,6 +674,10 @@ public class RouteRecalculationService {
 
     private void cancel(RouteRecalculation recalculation, String reason) {
         recalculation.cancel(Instant.now(), reason);
+        // 취소 이벤트 데이터(RouteRecalculationEventData)는 커밋 후 콜백에서 만들어지는데, 그때 지연 로딩
+        // 컬렉션(recalculatedNodeIds)을 처음 읽게 되면 트랜잭션 밖 지연 로딩에 기대게 된다. 이 경로에서
+        // 아직 한 번도 읽지 않았을 수 있으므로(예: 도면 변경으로 무효화) 트랜잭션 안에서 미리 초기화한다.
+        Hibernate.initialize(recalculation.getRecalculatedNodeIds());
         trainingEventPublisher.publishRouteRecalculationCancelledAfterCommit(recalculation);
     }
 
