@@ -226,11 +226,11 @@ public class RouteRecalculationService {
                 previous, candidate, candidateNodeIds);
     }
 
-    // 층 전체의 현재 혼잡 상태(CurrentCongestionWeightProvider, 모든 CCTV의 최신 관측값 기준)와
-    // 이번 호출 자신의 가중치를 합친다(같은 엣지면 더 큰 배율 사용). 이번 호출 몫을 따로 더하는
-    // 이유: CongestionEventService의 즉시 이벤트(STARTED/LEVEL_UP)는 CurrentCctvStateItem을
-    // 갱신하지 않으므로, 막 감지된 이 이벤트 자체가 아직 Provider의 "최신 상태" 집계에
-    // 반영 안 돼 있을 수 있다 - 그래서 이번 호출 몫은 항상 직접 넣어줘야 한다.
+    // 층 전체의 현재 혼잡 상태(CurrentCongestionWeightProvider, 모든 CCTV의 최신 관측값과 아직
+    // 끝나지 않은 최신 즉시 이벤트 기준)와 이번 호출 자신의 가중치를 합친다(같은 엣지면 더 큰 배율
+    // 사용). Provider도 즉시 이벤트를 반영하지만(#293), 이번 호출 몫은 계속 직접 더한다 - 관측값
+    // 트리거는 이 호출의 레벨이 즉시 이벤트보다 클 수 있고, 저장소 조회가 이 호출의 저장을 아직
+    // 못 볼 수도 있어서, 막 감지된 판단이 집계에서 빠지는 일이 없어야 한다.
     private Optional<Map<UUID, Double>> mergedCongestionMultipliers(
             UUID sessionId, UUID floorId, List<MapEdge> affectedEdges, CongestionLevel level) {
         Optional<Map<UUID, Double>> currentFloorWide = currentCongestionMultipliersOrFail(sessionId, floorId);

@@ -17,7 +17,11 @@ import com.saferoute.domain.evacuation.graph.entity.MapEdge;
 import com.saferoute.domain.evacuation.grid.entity.FloorGridCell;
 import com.saferoute.domain.evacuation.grid.entity.MapEdgeGridCell;
 import com.saferoute.domain.evacuation.grid.repository.MapEdgeGridCellRepository;
+import com.saferoute.domain.telemetry.dynamo.entity.CongestionEventItem;
+import com.saferoute.domain.telemetry.dynamo.entity.CongestionEventType;
 import com.saferoute.domain.telemetry.dynamo.entity.CurrentCctvStateItem;
+import com.saferoute.domain.telemetry.dynamo.entity.CurrentCongestionEventItem;
+import com.saferoute.domain.telemetry.dynamo.repository.CurrentCongestionEventRepository;
 import com.saferoute.domain.telemetry.dynamo.repository.CurrentCctvStateRepository;
 import java.time.Instant;
 import java.util.List;
@@ -56,6 +60,9 @@ class CurrentCongestionWeightProviderTest {
     @Mock
     private CongestionConfigService congestionConfigService;
 
+    @Mock
+    private CurrentCongestionEventRepository currentCongestionEventRepository;
+
     // 기본 설정(stateStaleAfterSec = 15초)
     @BeforeEach
     void setUp() {
@@ -71,6 +78,17 @@ class CurrentCongestionWeightProviderTest {
 
     private CurrentCctvStateItem state(String cctvCode, CongestionLevel level, long lastDetectedAt) {
         return CurrentCctvStateItem.create(sessionId, cctvCode, 1.0, 1, 1.0, level, lastDetectedAt, 1L);
+    }
+
+    private CurrentCongestionEventItem event(String cctvCode, CongestionEventType type, CongestionLevel level,
+            long detectedAt) {
+        return CurrentCongestionEventItem.from(CongestionEventItem.received(UUID.randomUUID(), sessionId,
+                cctvCode, type, detectedAt, 2, 3.1, level, 3.1, level, 1L, null));
+    }
+
+    private void latestEvents(CurrentCongestionEventItem... events) {
+        given(currentCongestionEventRepository.findAllBySessionId(sessionId.toString()))
+                .willReturn(List.of(events));
     }
 
     private long secondsAgo(int seconds) {
@@ -345,5 +363,99 @@ class CurrentCongestionWeightProviderTest {
 
         assertThat(provider.currentMultipliers(sessionId, floorId))
                 .containsOnly(Map.entry(edgeId, RouteRecalculationService.CROWDED_WEIGHT_MULTIPLIER));
+    }
+
+    // === 즉시 혼잡 이벤트 (#293) ===
+
+    @Test
+    @DisplayName("관측값이 NORMAL이어도 최신 즉시 이벤트가 끝나지 않은 혼잡이면 그 레벨을 반영한다")
+    void currentMultipliers_activeImmediateEventOverridesNormalObservation() {
+        UUID edgeId = UUID.randomUUID();
+        FloorGridCell cell = cell(UUID.randomUUID());
+        Cctv cctv = cctv(UUID.randomUUID(), "CCTV_122");
+
+        given(currentCctvStateRepository.findAllBySessionId(sessionId.toString()))
+                .willReturn(List.of(state("CCTV_122", CongestionLevel.NORMAL)));
+        latestEvents(event("CCTV_122", CongestionEventType.CONGESTION_STARTED, CongestionLevel.CROWDED,
+                secondsAgo(60)));
+        given(cctvJpaRepository.findAllByCustomNode_Floor_Id(floorId)).willReturn(List.of(cctv));
+        List<CctvGridCell> cctvCells = List.of(watching(cctv, cell));
+        List<MapEdgeGridCell> edgeCells = List.of(crossing(edgeId, cell));
+        given(cctvGridCellRepository.findAllByCctvIdsWithGridCell(any())).willReturn(cctvCells);
+        given(mapEdgeGridCellRepository.findAllByGridCell_IdIn(any())).willReturn(edgeCells);
+
+        assertThat(provider.currentMultipliers(sessionId, floorId))
+                .containsOnly(Map.entry(edgeId, RouteRecalculationService.CROWDED_WEIGHT_MULTIPLIER));
+    }
+
+    @Test
+    @DisplayName("관측값과 즉시 이벤트가 둘 다 혼잡이면 더 큰 배율을 쓴다")
+    void currentMultipliers_usesLargerOfObservationAndEvent() {
+        UUID edgeId = UUID.randomUUID();
+        FloorGridCell cell = cell(UUID.randomUUID());
+        Cctv cctv = cctv(UUID.randomUUID(), "CCTV-1");
+
+        given(currentCctvStateRepository.findAllBySessionId(sessionId.toString()))
+                .willReturn(List.of(state("CCTV-1", CongestionLevel.CROWDED)));
+        latestEvents(event("CCTV-1", CongestionEventType.CONGESTION_LEVEL_UP, CongestionLevel.VERY_CROWDED,
+                secondsAgo(5)));
+        given(cctvJpaRepository.findAllByCustomNode_Floor_Id(floorId)).willReturn(List.of(cctv));
+        List<CctvGridCell> cctvCells = List.of(watching(cctv, cell));
+        List<MapEdgeGridCell> edgeCells = List.of(crossing(edgeId, cell));
+        given(cctvGridCellRepository.findAllByCctvIdsWithGridCell(any())).willReturn(cctvCells);
+        given(mapEdgeGridCellRepository.findAllByGridCell_IdIn(any())).willReturn(edgeCells);
+
+        assertThat(provider.currentMultipliers(sessionId, floorId))
+                .containsOnly(Map.entry(edgeId, CurrentCongestionWeightProvider.VERY_CROWDED_WEIGHT_MULTIPLIER));
+    }
+
+    @Test
+    @DisplayName("최신 즉시 이벤트가 ENDED면 그 CCTV의 이벤트 혼잡은 반영하지 않는다")
+    void currentMultipliers_endedEventIsIgnored() {
+        given(currentCctvStateRepository.findAllBySessionId(sessionId.toString()))
+                .willReturn(List.of(state("CCTV-1", CongestionLevel.NORMAL)));
+        latestEvents(event("CCTV-1", CongestionEventType.CONGESTION_ENDED, CongestionLevel.NORMAL,
+                secondsAgo(1)));
+
+        assertThat(provider.currentMultipliers(sessionId, floorId)).isEmpty();
+        verifyNoInteractions(cctvJpaRepository, cctvGridCellRepository, mapEdgeGridCellRepository);
+    }
+
+    @Test
+    @DisplayName("제외 지정한 CCTV는 즉시 이벤트가 혼잡이어도 반영하지 않는다")
+    void currentMultipliers_excludedCctvEventIsIgnored() {
+        given(currentCctvStateRepository.findAllBySessionId(sessionId.toString())).willReturn(List.of());
+        latestEvents(event("CCTV-ENDED", CongestionEventType.CONGESTION_STARTED, CongestionLevel.CROWDED,
+                secondsAgo(1)));
+
+        assertThat(provider.currentMultipliers(sessionId, floorId, java.util.Set.of("CCTV-ENDED"))).isEmpty();
+        verifyNoInteractions(cctvJpaRepository, cctvGridCellRepository, mapEdgeGridCellRepository);
+    }
+
+    @Test
+    @DisplayName("관측이 끊긴 CCTV의 즉시 이벤트는 방금 온 것만 반영하고 오래된 것은 무시한다")
+    void currentMultipliers_eventOfDisconnectedCctvNeedsFreshEvent() {
+        UUID freshEdgeId = UUID.randomUUID();
+        FloorGridCell freshCell = cell(UUID.randomUUID());
+        Cctv freshCctv = cctv(UUID.randomUUID(), "CCTV-FRESH-EVENT");
+        Cctv oldCctv = mock(Cctv.class);
+        given(oldCctv.getCode()).willReturn("CCTV-OLD-EVENT");
+
+        given(currentCctvStateRepository.findAllBySessionId(sessionId.toString())).willReturn(List.of(
+                state("CCTV-FRESH-EVENT", CongestionLevel.NORMAL, secondsAgo(60)),
+                state("CCTV-OLD-EVENT", CongestionLevel.NORMAL, secondsAgo(60))));
+        latestEvents(
+                event("CCTV-FRESH-EVENT", CongestionEventType.CONGESTION_STARTED, CongestionLevel.CROWDED,
+                        secondsAgo(2)),
+                event("CCTV-OLD-EVENT", CongestionEventType.CONGESTION_STARTED, CongestionLevel.CROWDED,
+                        secondsAgo(60)));
+        given(cctvJpaRepository.findAllByCustomNode_Floor_Id(floorId)).willReturn(List.of(freshCctv, oldCctv));
+        List<CctvGridCell> cctvCells = List.of(watching(freshCctv, freshCell));
+        List<MapEdgeGridCell> edgeCells = List.of(crossing(freshEdgeId, freshCell));
+        given(cctvGridCellRepository.findAllByCctvIdsWithGridCell(any())).willReturn(cctvCells);
+        given(mapEdgeGridCellRepository.findAllByGridCell_IdIn(any())).willReturn(edgeCells);
+
+        assertThat(provider.currentMultipliers(sessionId, floorId))
+                .containsOnly(Map.entry(freshEdgeId, RouteRecalculationService.CROWDED_WEIGHT_MULTIPLIER));
     }
 }

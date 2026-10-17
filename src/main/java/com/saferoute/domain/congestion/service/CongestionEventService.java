@@ -14,8 +14,10 @@ import com.saferoute.domain.evacuation.recalculation.service.RouteRecalculationS
 import com.saferoute.domain.floor.entity.Floor;
 import com.saferoute.domain.telemetry.dynamo.entity.CongestionEventItem;
 import com.saferoute.domain.telemetry.dynamo.entity.CongestionEventType;
+import com.saferoute.domain.telemetry.dynamo.entity.CurrentCongestionEventItem;
 import com.saferoute.domain.telemetry.dynamo.entity.EventProcessingStatus;
 import com.saferoute.domain.telemetry.dynamo.repository.CongestionEventRepository;
+import com.saferoute.domain.telemetry.dynamo.repository.CurrentCongestionEventRepository;
 import com.saferoute.domain.telemetry.dynamo.repository.IdempotentSaveResult;
 import com.saferoute.domain.training.entity.TrainingSession;
 import com.saferoute.domain.training.entity.TrainingStatus;
@@ -45,6 +47,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 public class CongestionEventService {
 
     private final CongestionEventRepository congestionEventRepository;
+    private final CurrentCongestionEventRepository currentCongestionEventRepository;
     private final TrainingSessionRepository trainingSessionRepository;
     private final CctvGridCellRepository cctvGridCellRepository;
     private final MapEdgeGridCellRepository mapEdgeGridCellRepository;
@@ -104,8 +107,12 @@ public class CongestionEventService {
         try {
             List<MapEdge> affectedEdges = resolveAffectedEdges(cctv.getId());
             // 현재 상태(CurrentCctvStateItem)는 주기 Observation만을 기준 데이터로 삼는다.
-            // 즉시 이벤트는 여기서 상태를 갱신하지 않고 타임라인/재탐색 트리거/WebSocket 발행에만 쓰인다
-            // (CongestionObservationService.updateCurrentState 참고).
+            // 즉시 이벤트는 여기서 상태를 갱신하지 않는다(다음 관측값이 곧바로 덮어쓰므로 의미가 없다).
+            // 대신 CCTV별 최신 즉시 이벤트를 따로 기록해 두고(CurrentCongestionEventItem), 경로 가중치
+            // 계산(CurrentCongestionWeightProvider)이 이를 강한 일관성으로 읽어 함께 반영한다(#293).
+            // 재탐색 트리거보다 먼저 기록해야 이 이벤트로 시작되는 재계산과 그 직후 다른 CCTV의
+            // 재계산이 모두 이 이벤트를 본다.
+            currentCongestionEventRepository.updateIfLatest(CurrentCongestionEventItem.from(saveResult.item()));
 
             CongestionLevel savedLevel = saveResult.item().getCongestionLevel();
             RecalculationTriggerType triggerType = mapTriggerType(saveResult.item().getEventType());
