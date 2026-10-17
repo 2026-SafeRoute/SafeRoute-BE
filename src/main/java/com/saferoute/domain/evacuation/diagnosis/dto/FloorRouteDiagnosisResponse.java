@@ -16,6 +16,10 @@ public record FloorRouteDiagnosisResponse(
         @Schema(description = "어떤 탈출구에도 도달할 수 없는 노드 ID 목록 (CCTV·유도등 위치 노드는 제외)")
         List<UUID> unreachableNodeIds,
 
+        @Schema(description = "타입이 STAIR·EXIT인데 탈출구로 지정하지 않아 경로 탐색에 쓰이지 않는 노드 ID 목록. "
+                + "일부러 쓰지 않는 계단도 있을 수 있어 참고 정보이며 ready에는 영향이 없다")
+        List<UUID> undesignatedStairNodeIds,
+
         @Schema(description = "시작 후보별 도달 가능한 탈출구 수")
         List<StartCandidate> startCandidates
 ) {

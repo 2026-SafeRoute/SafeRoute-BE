@@ -69,27 +69,9 @@ public class RouteDiagnosisService {
         List<MapNode> nodes = mapGraphRepository.findNodesByFloor(floorId);
         List<MapEdge> edges = mapGraphRepository.findEdgesByFloor(floorId);
 
-        // 이동 가능 방향은 EvacuationRouteService.buildAdjacencyList와 같다:
-        // from -> to는 항상, bidirectional이면 to -> from도 가능하다.
-        Map<UUID, List<UUID>> forward = new HashMap<>();
-        Map<UUID, List<UUID>> backward = new HashMap<>();
-        for (MapEdge edge : edges) {
-            UUID from = edge.getFromNode().getId();
-            UUID to = edge.getToNode().getId();
-            forward.computeIfAbsent(from, k -> new ArrayList<>()).add(to);
-            backward.computeIfAbsent(to, k -> new ArrayList<>()).add(from);
-            if (edge.isBidirectional()) {
-                forward.computeIfAbsent(to, k -> new ArrayList<>()).add(from);
-                backward.computeIfAbsent(from, k -> new ArrayList<>()).add(to);
-            }
-        }
-
-        Set<UUID> exitIds = new HashSet<>();
-        for (MapNode node : nodes) {
-            if (node.isExitTarget()) {
-                exitIds.add(node.getId());
-            }
-        }
+        Map<UUID, List<UUID>> forward = adjacency(edges, Set.of(), false);
+        Map<UUID, List<UUID>> backward = adjacency(edges, Set.of(), true);
+        Set<UUID> exitIds = exitIds(nodes);
 
         // 탈출구에서 거꾸로 따라가 닿는 노드 = 탈출구까지 갈 수 있는 노드.
         // CCTV·유도등 위치 노드(CUSTOM)는 대피 경로 노드가 아니라 엣지에 안 붙어 있어도 정상이므로 빼고 본다.
@@ -113,7 +95,8 @@ public class RouteDiagnosisService {
         boolean ready = !exitIds.isEmpty()
                 && unreachableNodeIds.isEmpty()
                 && startCandidates.stream().allMatch(candidate -> candidate.reachableExitCount() >= 2);
-        return new FloorRouteDiagnosisResponse(floorId, ready, unreachableNodeIds, startCandidates);
+        return new FloorRouteDiagnosisResponse(
+                floorId, ready, unreachableNodeIds, undesignatedStairNodeIds(nodes), startCandidates);
     }
 
     public ScenarioRouteDiagnosisResponse diagnoseScenario(UUID scenarioId, String email) {
@@ -152,6 +135,16 @@ public class RouteDiagnosisService {
         // 출구 미지정·도달 불가면 시작도 같은 오류로 막히므로 예외를 그대로 돌려준다.
         Set<UUID> originEdgeIds = edgesUpTo(generationByEdgeId, 0);
         EvacuationRoute initialRoute = evacuationRouteService.findShortestRoute(floorId, startNodeId, originEdgeIds);
+
+        // 최초 안내 경로와 같은 그래프(발화 지점 엣지만 제외)에서 시작 지점이 닿지 못하는 탈출구.
+        List<MapNode> nodes = mapGraphRepository.findNodesByFloor(floorId);
+        Set<UUID> reachableFromStart = reachableFrom(
+                Set.of(startNodeId), adjacency(edgeById.values(), originEdgeIds, false));
+        List<UUID> unreachableExitNodeIds = nodes.stream()
+                .filter(MapNode::isExitTarget)
+                .map(MapNode::getId)
+                .filter(id -> !reachableFromStart.contains(id))
+                .toList();
 
         // 재탐색 판단 기준이 되는 "현재 활성 경로". 승인 이력이 없으면 RouteRecalculationService.resolveActiveRoute()는
         // 화재를 빼지 않은 직행 경로를 쓰고, 그것도 없으면 빈 경로를 쓴다(그러면 재탐색이 일어나지 않는다).
@@ -207,7 +200,46 @@ public class RouteDiagnosisService {
 
         return new ScenarioRouteDiagnosisResponse(
                 scenarioId, floorId, startNodeId, scenario.getFireSpreadSpeed(), tickSeconds, simulatedUntilSeconds,
-                nodeIds(initialRoute), recalculationCount, blockedAfterSeconds, events, hasAlternativeRoute);
+                nodeIds(initialRoute), unreachableExitNodeIds, undesignatedStairNodeIds(nodes),
+                recalculationCount, blockedAfterSeconds, events, hasAlternativeRoute);
+    }
+
+    // 이동 가능 방향은 EvacuationRouteService.buildAdjacencyList와 같다:
+    // from -> to는 항상, bidirectional이면 to -> from도 가능하다. reverse면 "이 노드로 들어올 수 있는" 방향이다.
+    private static Map<UUID, List<UUID>> adjacency(Iterable<MapEdge> edges, Set<UUID> excludedEdgeIds,
+            boolean reverse) {
+        Map<UUID, List<UUID>> adjacency = new HashMap<>();
+        for (MapEdge edge : edges) {
+            if (excludedEdgeIds.contains(edge.getId())) {
+                continue;
+            }
+            UUID from = edge.getFromNode().getId();
+            UUID to = edge.getToNode().getId();
+            adjacency.computeIfAbsent(reverse ? to : from, k -> new ArrayList<>()).add(reverse ? from : to);
+            if (edge.isBidirectional()) {
+                adjacency.computeIfAbsent(reverse ? from : to, k -> new ArrayList<>()).add(reverse ? to : from);
+            }
+        }
+        return adjacency;
+    }
+
+    private static Set<UUID> exitIds(List<MapNode> nodes) {
+        Set<UUID> exitIds = new HashSet<>();
+        for (MapNode node : nodes) {
+            if (node.isExitTarget()) {
+                exitIds.add(node.getId());
+            }
+        }
+        return exitIds;
+    }
+
+    // 계단·출구인데 탈출구로 지정하지 않아 경로 탐색(isExitTarget 기준)에 쓰이지 않는 노드.
+    private static List<UUID> undesignatedStairNodeIds(List<MapNode> nodes) {
+        return nodes.stream()
+                .filter(node -> node.getType() == NodeType.STAIR || node.getType() == NodeType.EXIT)
+                .filter(node -> !node.isExitTarget())
+                .map(MapNode::getId)
+                .toList();
     }
 
     // TrainingSessionService.start()와 ScenarioEvacuationSetupService가 시작 지점으로 허용하는 노드와 같은 기준.

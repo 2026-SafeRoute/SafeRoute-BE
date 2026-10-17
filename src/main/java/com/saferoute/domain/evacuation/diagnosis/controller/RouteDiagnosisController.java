@@ -32,6 +32,8 @@ public class RouteDiagnosisController {
 
                     - unreachableNodeIds: 어떤 탈출구(EXIT 대상)에도 도달할 수 없는 노드.
                       CCTV·유도등 위치 노드(CUSTOM)는 대피 경로 노드가 아니므로 포함하지 않습니다.
+                    - undesignatedStairNodeIds: 타입이 STAIR·EXIT인데 탈출구로 지정하지 않은 노드. 참고 정보라
+                      ready에는 영향이 없습니다.
                     - startCandidates: 시작 후보(START 타입, 또는 시작 후보로 지정한 DOOR)마다 갈 수 있는 탈출구 수.
                     - ready: 탈출구가 있고, 끊긴 노드가 없고, 모든 시작 후보가 탈출구 2곳 이상에 닿으면 true.
 
@@ -60,6 +62,9 @@ public class RouteDiagnosisController {
                     - events: RECALCULATED(재탐색으로 경로가 바뀜) / BLOCKED(우회 경로가 없어 막힘), 시간순.
                     - recalculationCount: 예상 재탐색 횟수.
                     - blockedAfterSeconds: 모든 경로가 막히는 예상 시점. 훈련 제한 시간(10분) 안에 막히지 않으면 null.
+                    - unreachableExitNodeIds: 탈출구로 지정됐지만 훈련 시작 시점(최초 발화 지점만 막힌 상태)에
+                      시작 지점에서 갈 수 없는 탈출구. 엣지가 끊긴 경우와 발화 지점에 막힌 경우를 모두 포함합니다.
+                    - undesignatedStairNodeIds: 타입이 STAIR·EXIT인데 탈출구로 지정하지 않은 노드.
                     - hasAlternativeRoute: 불이 안내 경로에 처음 닿았을 때 재탐색이 일어나면 true.
                       닿자마자 막히면 false이며, 이때 시작 확인창을 띄웁니다. 불이 경로에 닿지 않으면 true입니다.
 
