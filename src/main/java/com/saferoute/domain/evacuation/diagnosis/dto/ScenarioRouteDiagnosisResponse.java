@@ -28,6 +28,14 @@ public record ScenarioRouteDiagnosisResponse(
         @Schema(description = "훈련 시작 시 처음 안내되는 경로의 노드 ID 목록 (출발 -> 도착)")
         List<UUID> initialRouteNodeIds,
 
+        @Schema(description = "탈출구로 지정됐지만 훈련 시작 시점(최초 발화 지점만 막힌 상태)에 시작 지점에서 갈 수 없는 "
+                + "탈출구 노드 ID 목록. 모두 갈 수 있으면 빈 목록")
+        List<UUID> unreachableExitNodeIds,
+
+        @Schema(description = "타입이 STAIR·EXIT인데 탈출구로 지정하지 않은 노드 ID 목록. 엣지로 이어져 있으면 경로 "
+                + "중간에는 지날 수 있지만 대피 목적지(탈출구)로는 선택되지 않는다")
+        List<UUID> undesignatedStairNodeIds,
+
         @Schema(description = "예상 재탐색 횟수")
         int recalculationCount,
 

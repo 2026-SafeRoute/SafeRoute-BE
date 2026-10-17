@@ -176,6 +176,27 @@ class RouteDiagnosisServiceTest {
         }
 
         @Test
+        @DisplayName("탈출구로 지정하지 않은 계단·출구를 따로 알려주고, ready 판단에는 넣지 않는다")
+        void undesignatedStairs_listedButDoNotAffectReady() {
+            MapNode start = node("S", NodeType.START, false);
+            MapNode exitLeft = node("E1", NodeType.STAIR, true);
+            MapNode exitRight = node("E2", NodeType.EXIT, true);
+            MapNode plainStair = node("P", NodeType.STAIR, false);
+            MapNode plainExit = node("Q", NodeType.EXIT, false);
+            MapNode hall = node("H", NodeType.HALLWAY, false);
+            // 미지정 계단·출구도 엣지로 이어져 있으면 끊긴 노드는 아니다.
+            givenGraph(List.of(start, exitLeft, exitRight, plainStair, plainExit, hall), List.of(
+                    edge(exitLeft, start, 1, true), edge(start, exitRight, 1, true),
+                    edge(start, hall, 1, true), edge(hall, plainStair, 1, true), edge(hall, plainExit, 1, true)));
+
+            FloorRouteDiagnosisResponse response = routeDiagnosisService.diagnoseFloor(floorId, EMAIL);
+
+            assertThat(response.undesignatedStairNodeIds()).containsExactly(plainStair.getId(), plainExit.getId());
+            assertThat(response.unreachableNodeIds()).isEmpty();
+            assertThat(response.ready()).isTrue();
+        }
+
+        @Test
         @DisplayName("탈출구가 하나도 없으면 ready가 아니고 모든 경로 노드가 끊긴 노드다")
         void noExit_notReady() {
             MapNode start = node("S", NodeType.START, false);
@@ -238,6 +259,10 @@ class RouteDiagnosisServiceTest {
         }
 
         private void givenScenario(int fireOriginColumn, List<MapEdge> edges) {
+            givenScenario(fireOriginColumn, edges, List.of());
+        }
+
+        private void givenScenario(int fireOriginColumn, List<MapEdge> edges, List<MapNode> extraNodes) {
             TrainingScenario scenario = mock(TrainingScenario.class);
             given(scenario.getStartNode()).willReturn(start);
             given(scenario.getFireSpreadSpeed()).willReturn(FireSpreadSpeed.FAST);
@@ -256,7 +281,9 @@ class RouteDiagnosisServiceTest {
                                 .filter(mapping -> edges.contains(mapping.getMapEdge()))
                                 .toList();
                     });
-            givenGraph(List.of(start, hallLeft, exitLeft, hallRight, exitRight), edges);
+            List<MapNode> nodes = new ArrayList<>(List.of(start, hallLeft, exitLeft, hallRight, exitRight));
+            nodes.addAll(extraNodes);
+            givenGraph(nodes, edges);
         }
 
         private List<UUID> ids(MapNode... nodes) {
@@ -296,6 +323,53 @@ class RouteDiagnosisServiceTest {
             assertThat(response.recalculationCount()).isZero();
             assertThat(response.blockedAfterSeconds()).isEqualTo(5L);
             assertThat(response.hasAlternativeRoute()).isFalse();
+        }
+
+        @Test
+        @DisplayName("모든 탈출구에 갈 수 있고 미지정 계단이 없으면 두 목록 모두 비어 있다")
+        void allExitsReachable_emptyLists() {
+            givenScenario(1, List.of(hallLeftToExitLeft, startToHallLeft, startToHallRight, hallRightToExitRight));
+
+            ScenarioRouteDiagnosisResponse response = routeDiagnosisService.diagnoseScenario(scenarioId, EMAIL);
+
+            assertThat(response.unreachableExitNodeIds()).isEmpty();
+            assertThat(response.undesignatedStairNodeIds()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("엣지가 끊긴 탈출구는 갈 수 없는 탈출구, 지정 안 한 계단은 미지정 계단으로 따로 알려준다")
+        void disconnectedExitAndUndesignatedStair_listedSeparately() {
+            MapNode plainStair = node("P", NodeType.STAIR, false);
+            // 오른쪽 출구로 가는 엣지가 없다(끊김).
+            givenScenario(1, List.of(hallLeftToExitLeft, startToHallLeft), List.of(plainStair));
+
+            ScenarioRouteDiagnosisResponse response = routeDiagnosisService.diagnoseScenario(scenarioId, EMAIL);
+
+            assertThat(response.unreachableExitNodeIds()).containsExactly(exitRight.getId());
+            assertThat(response.undesignatedStairNodeIds()).containsExactly(plainStair.getId());
+        }
+
+        @Test
+        @DisplayName("단방향 엣지 때문에 시작 지점에서 못 가는 탈출구도 갈 수 없는 탈출구다")
+        void oneWayEdgeExit_unreachable() {
+            MapEdge rightOneWay = edge(exitRight, hallRight, 5, false);
+            givenScenario(1, List.of(hallLeftToExitLeft, startToHallLeft, startToHallRight, rightOneWay));
+
+            ScenarioRouteDiagnosisResponse response = routeDiagnosisService.diagnoseScenario(scenarioId, EMAIL);
+
+            assertThat(response.unreachableExitNodeIds()).containsExactly(exitRight.getId());
+        }
+
+        @Test
+        @DisplayName("발화 지점이 유일한 길을 막은 탈출구도 갈 수 없는 탈출구로 본다 (최초 안내 경로와 같은 기준)")
+        void exitBlockedByFireOrigin_unreachable() {
+            // 2열(A-E1)이 발화 지점이라 처음부터 왼쪽 출구로 못 가고, 최초 경로는 오른쪽 출구다.
+            givenScenario(2, List.of(hallLeftToExitLeft, startToHallLeft, startToHallRight, hallRightToExitRight));
+
+            ScenarioRouteDiagnosisResponse response = routeDiagnosisService.diagnoseScenario(scenarioId, EMAIL);
+
+            assertThat(response.initialRouteNodeIds()).isEqualTo(ids(start, hallRight, exitRight));
+            assertThat(response.unreachableExitNodeIds()).containsExactly(exitLeft.getId());
         }
 
         @Test
