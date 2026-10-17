@@ -32,7 +32,8 @@ public record ScenarioRouteDiagnosisResponse(
                 + "탈출구 노드 ID 목록. 모두 갈 수 있으면 빈 목록")
         List<UUID> unreachableExitNodeIds,
 
-        @Schema(description = "타입이 STAIR·EXIT인데 탈출구로 지정하지 않아 경로 탐색에 쓰이지 않는 노드 ID 목록")
+        @Schema(description = "타입이 STAIR·EXIT인데 탈출구로 지정하지 않은 노드 ID 목록. 엣지로 이어져 있으면 경로 "
+                + "중간에는 지날 수 있지만 대피 목적지(탈출구)로는 선택되지 않는다")
         List<UUID> undesignatedStairNodeIds,
 
         @Schema(description = "예상 재탐색 횟수")

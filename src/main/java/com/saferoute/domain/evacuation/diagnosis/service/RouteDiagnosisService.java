@@ -233,7 +233,8 @@ public class RouteDiagnosisService {
         return exitIds;
     }
 
-    // 계단·출구인데 탈출구로 지정하지 않아 경로 탐색(isExitTarget 기준)에 쓰이지 않는 노드.
+    // 계단·출구인데 탈출구로 지정하지 않은 노드. 경로 탐색은 이런 노드도 중간 경유지로는 지나가지만,
+    // 목적지는 isExitTarget인 노드만 고르므로(EvacuationRouteService.findShortestRoute) 대피 목적지가 되지 않는다.
     private static List<UUID> undesignatedStairNodeIds(List<MapNode> nodes) {
         return nodes.stream()
                 .filter(node -> node.getType() == NodeType.STAIR || node.getType() == NodeType.EXIT)
