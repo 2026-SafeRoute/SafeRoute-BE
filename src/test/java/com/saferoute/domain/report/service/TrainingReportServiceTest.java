@@ -10,6 +10,7 @@ import static org.mockito.Mockito.verify;
 
 import com.saferoute.domain.evacuation.deviation.service.RouteDeviationService;
 import com.saferoute.domain.evacuation.deviation.service.SessionDeviationResult;
+import com.saferoute.domain.evacuation.recalculation.repository.RouteRecalculationRepository;
 import com.saferoute.domain.report.dto.GenerateReportRequest;
 import com.saferoute.domain.report.dto.ReportResponse;
 import com.saferoute.domain.report.entity.Grade;
@@ -63,6 +64,9 @@ class TrainingReportServiceTest {
     @Mock
     private SchoolContextService schoolContextService;
 
+    @Mock
+    private RouteRecalculationRepository routeRecalculationRepository;
+
     private final UUID sessionId = UUID.randomUUID();
     private final UUID buildingId = UUID.randomUUID();
 
@@ -83,6 +87,8 @@ class TrainingReportServiceTest {
         TrainingSession session = mock(TrainingSession.class);
         org.mockito.Mockito.lenient().when(session.getScenario()).thenReturn(scenario);
         org.mockito.Mockito.lenient().when(session.getStartedAt()).thenReturn(startedAt);
+        // 실제 엔티티는 경로가 막힌 적이 없으면 null을 돌려준다 - 목의 기본값(0)이면 "0초에 막힘"으로 읽힌다.
+        org.mockito.Mockito.lenient().when(session.routeBlockedAfterSec()).thenReturn(null);
         given(session.getEndedAt()).willReturn(endedAt);
         return session;
     }
@@ -205,6 +211,29 @@ class TrainingReportServiceTest {
         ArgumentCaptor<TrainingReport> captor = ArgumentCaptor.forClass(TrainingReport.class);
         verify(trainingReportRepository).saveAndFlush(captor.capture());
         assertThat(captor.getValue().getRouteBlockedAfterSec()).isEqualTo(95);
+    }
+
+    @Test
+    @DisplayName("A등급이어도 재탐색 없이 경로가 막혔으면 경로 권고가 맨 앞에 나오고 요약에 경로 문단이 붙는다")
+    void generate_routeBlockedWithoutRecalculation_addsRouteRecommendationEvenForGradeA() {
+        Instant startedAt = Instant.parse("2026-01-01T00:00:00Z");
+        TrainingSession session = endedSession(300, startedAt, startedAt.plusSeconds(300));
+        given(session.routeBlockedAfterSec()).willReturn(95);
+        given(trainingSessionRepository.findByIdAndScenario_Building_SchoolName(sessionId, SCHOOL_NAME))
+                .willReturn(Optional.of(session));
+        given(routeDeviationService.calculateForSession(sessionId, EMAIL))
+                .willReturn(new SessionDeviationResult(10, 0, 0.0));
+        given(routeRecalculationRepository.findAllByTrainingSession_IdOrderByRequestedAtDesc(sessionId))
+                .willReturn(Collections.emptyList());
+        given(trainingReportRepository.saveAndFlush(any())).willAnswer(invocation -> invocation.getArgument(0));
+
+        ReportResponse response = trainingReportService.generate(sessionId, new GenerateReportRequest(50, 50), EMAIL);
+
+        assertThat(response.getGrade()).isEqualTo(Grade.A);
+        assertThat(response.getRecommendations()).hasSize(1);
+        assertThat(response.getRecommendations().get(0).description())
+                .isEqualTo(RouteRecalculationReportNarrative.NO_ALTERNATIVE_ROUTE_DESCRIPTION);
+        assertThat(response.getSummaryText()).contains("경로: 화재 확산으로 훈련 시작 1분 35초 후 모든 대피 경로가 막혔습니다.");
     }
 
     @Test
