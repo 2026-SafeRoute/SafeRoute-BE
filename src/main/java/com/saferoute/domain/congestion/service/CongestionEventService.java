@@ -104,8 +104,9 @@ public class CongestionEventService {
         try {
             List<MapEdge> affectedEdges = resolveAffectedEdges(cctv.getId());
             // 현재 상태(CurrentCctvStateItem)는 주기 Observation만을 기준 데이터로 삼는다.
-            // 즉시 이벤트는 여기서 상태를 갱신하지 않고 타임라인/재탐색 트리거/WebSocket 발행에만 쓰인다
-            // (CongestionObservationService.updateCurrentState 참고).
+            // 즉시 이벤트는 여기서 상태를 갱신하지 않는다(다음 관측값이 곧바로 덮어쓰므로 의미가 없다).
+            // 대신 경로 가중치 계산(CurrentCongestionWeightProvider)이 CCTV별 최신 즉시 이벤트를 직접
+            // 조회해 함께 반영한다(#293).
 
             CongestionLevel savedLevel = saveResult.item().getCongestionLevel();
             RecalculationTriggerType triggerType = mapTriggerType(saveResult.item().getEventType());

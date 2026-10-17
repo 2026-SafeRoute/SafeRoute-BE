@@ -5,7 +5,9 @@ import com.saferoute.domain.telemetry.dynamo.entity.CongestionEventItem;
 import com.saferoute.domain.telemetry.dynamo.entity.CongestionEventType;
 import com.saferoute.domain.telemetry.dynamo.entity.EventProcessingStatus;
 import com.saferoute.domain.telemetry.dynamo.entity.ImageUploadStatus;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Repository;
@@ -28,6 +30,7 @@ import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedExce
 public class CongestionEventRepository {
 
     static final int DEFAULT_QUERY_LIMIT = 100;
+    static final int LATEST_PER_CCTV_SCAN_LIMIT = 500;
 
     // CongestionEventItem과 GeneralMonitoringEventItem은 같은 물리 테이블의 같은 GSI1을
     // 공유하고, 둘 다 GSI1_PK를 "SESSION#{trainingSessionId}"로 만든다(단일 테이블 설계).
@@ -112,6 +115,32 @@ public class CongestionEventRepository {
                 .flatMap(page -> page.items().stream())
                 .limit(limit)
                 .toList();
+    }
+
+    // 경로 가중치 계산 전용: CCTV별로 가장 최근 즉시 이벤트 하나씩을 돌려준다. 최신순으로 읽되,
+    // 정렬 키(EVENT#{detectedAt}#{eventId})의 문자열 순서에만 기대지 않고 detectedAt을 직접 비교한다.
+    // 세션당 즉시 이벤트는 혼잡 진입/상승/종료 때만 쌓여 많지 않지만, 관측 주기마다 호출될 수 있으므로
+    // 최근 LATEST_PER_CCTV_SCAN_LIMIT건까지만 본다.
+    public Map<String, CongestionEventItem> findLatestPerCctvBySessionId(String trainingSessionId) {
+        QueryEnhancedRequest request = QueryEnhancedRequest.builder()
+                .queryConditional(QueryConditional.keyEqualTo(Key.builder()
+                        .partitionValue(CongestionEventItem.buildGsi1Pk(trainingSessionId))
+                        .build()))
+                .filterExpression(pkPrefixFilter())
+                .scanIndexForward(false)
+                .limit(LATEST_PER_CCTV_SCAN_LIMIT)
+                .build();
+
+        Map<String, CongestionEventItem> latestByCctvCode = new HashMap<>();
+        gsi1.query(request).stream()
+                .flatMap(page -> page.items().stream())
+                .limit(LATEST_PER_CCTV_SCAN_LIMIT)
+                .filter(item -> item.getCctvCode() != null && item.getDetectedAt() != null)
+                .forEach(item -> latestByCctvCode.merge(item.getCctvCode(), item,
+                        (current, candidate) -> candidate.getDetectedAt() > current.getDetectedAt()
+                                ? candidate
+                                : current));
+        return latestByCctvCode;
     }
 
     // 리포트 전용 병목 횟수 집계: 임의의 상한 없이 세션 파티션 전체를 순회하며 서버 사이드
