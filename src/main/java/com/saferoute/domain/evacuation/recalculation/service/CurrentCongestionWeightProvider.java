@@ -9,10 +9,10 @@ import com.saferoute.domain.device.repository.CctvGridCellRepository;
 import com.saferoute.domain.device.repository.CctvJpaRepository;
 import com.saferoute.domain.evacuation.grid.entity.MapEdgeGridCell;
 import com.saferoute.domain.evacuation.grid.repository.MapEdgeGridCellRepository;
-import com.saferoute.domain.telemetry.dynamo.entity.CongestionEventItem;
+import com.saferoute.domain.telemetry.dynamo.entity.CurrentCongestionEventItem;
 import com.saferoute.domain.telemetry.dynamo.entity.CongestionEventType;
 import com.saferoute.domain.telemetry.dynamo.entity.CurrentCctvStateItem;
-import com.saferoute.domain.telemetry.dynamo.repository.CongestionEventRepository;
+import com.saferoute.domain.telemetry.dynamo.repository.CurrentCongestionEventRepository;
 import com.saferoute.domain.telemetry.dynamo.repository.CurrentCctvStateRepository;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -31,7 +31,7 @@ import org.springframework.transaction.annotation.Transactional;
 // 한 세션의 한 층에서 "지금 이 순간" 혼잡한 엣지들의 가중치 배율 맵을 만든다.
 // 혼잡 트리거(RouteRecalculationService.trigger)는 그 트리거를 낸 CCTV 한 대의 엣지만 알면 되지만,
 // 화재 우회 후보는 혼잡 이벤트와 무관한 시점에 계산되므로 층 전체의 현재 혼잡 상태가 필요하다.
-// 기준 데이터는 CCTV별 최신 관측값(CurrentCctvStateItem)과 CCTV별 가장 최근 즉시 혼잡 이벤트(CongestionEventItem)다.
+// 기준 데이터는 CCTV별 최신 관측값(CurrentCctvStateItem)과 CCTV별 가장 최근 즉시 혼잡 이벤트(CurrentCongestionEventItem)다.
 // 즉시 이벤트는 Pi가 프레임 단위로 혼잡 진입/상승을 판단해 보내는 신호라, 구간 평균인 관측값보다 혼잡을 먼저
 // (또는 관측값은 NORMAL인데도) 알려줄 수 있다. 관측값만 보면 A CCTV의 즉시 이벤트로 만든 우회 제안이,
 // 그 직후 B CCTV 쪽 재계산에서 A가 NORMAL로 보여 바로 취소된다(#293). 그래서 CCTV별 최신 즉시 이벤트가
@@ -61,7 +61,7 @@ public class CurrentCongestionWeightProvider {
     private final CctvGridCellRepository cctvGridCellRepository;
     private final MapEdgeGridCellRepository mapEdgeGridCellRepository;
     private final CongestionConfigService congestionConfigService;
-    private final CongestionEventRepository congestionEventRepository;
+    private final CurrentCongestionEventRepository currentCongestionEventRepository;
 
     // 혼잡하지 않은 엣지(배율 1.0)는 담지 않는다. 여러 CCTV가 같은 엣지를 감시하면 가장 큰 배율을 쓴다.
     public Map<UUID, Double> currentMultipliers(UUID sessionId, UUID floorId) {
@@ -100,8 +100,8 @@ public class CurrentCongestionWeightProvider {
         // 즉시 이벤트는 혼잡이 이어지는 동안 반복해서 오지 않으므로 이벤트 시각만으로 신선도를 판단하면
         // 혼잡이 계속돼도 곧 빠져버린다. 그래서 그 CCTV가 아직 관측값을 보내고 있으면(살아 있으면) 마지막
         // 이벤트를 그대로 믿고, 관측값이 끊겼으면 이벤트 자체가 방금 온 경우에만 반영한다.
-        for (CongestionEventItem event
-                : congestionEventRepository.findLatestPerCctvBySessionId(sessionId.toString()).values()) {
+        for (CurrentCongestionEventItem event
+                : currentCongestionEventRepository.findAllBySessionId(sessionId.toString())) {
             String cctvCode = event.getCctvCode();
             if (excludedCctvCodes.contains(cctvCode)
                     || event.getEventType() == CongestionEventType.CONGESTION_ENDED) {
