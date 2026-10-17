@@ -2,6 +2,8 @@ package com.saferoute.domain.report.service;
 
 import com.saferoute.domain.evacuation.deviation.service.RouteDeviationService;
 import com.saferoute.domain.evacuation.deviation.service.SessionDeviationResult;
+import com.saferoute.domain.evacuation.recalculation.entity.RouteRecalculation;
+import com.saferoute.domain.evacuation.recalculation.repository.RouteRecalculationRepository;
 import com.saferoute.domain.report.dto.GenerateReportRequest;
 import com.saferoute.domain.report.entity.Grade;
 import com.saferoute.domain.telemetry.dynamo.repository.CongestionEventRepository;
@@ -40,6 +42,7 @@ public class TrainingReportService {
   private final TrainingReportChartService trainingReportChartService;
   private final TrainingReportPdfGenerator trainingReportPdfGenerator;
   private final SchoolContextService schoolContextService;
+  private final RouteRecalculationRepository routeRecalculationRepository;
 
   // 훈련 종료 후 관리자가 참여/생존 인원만 입력하면, 나머지 3개 항목(대피시간/병목/경로준수율)은
   // 이미 갖고 있는 데이터로 직접 계산해 리포트를 생성한다.
@@ -97,8 +100,14 @@ public class TrainingReportService {
         deviation.deviationRate(), deviationScore,
         overallScore, grade,
         zoneDensities);
-    String summaryText = TrainingReportNarrativeGenerator.buildSummary(narrativeInput);
-    List<RecommendationPoint> recommendations = TrainingReportNarrativeGenerator.buildRecommendations(narrativeInput);
+    // 점수 기반 문장 뒤에 실제 경로 재탐색 결과를 덧붙인다 (#289). 경로 권고는 점수와 무관하게 맨 앞에 온다.
+    List<RouteRecalculation> recalculations =
+        routeRecalculationRepository.findAllByTrainingSession_IdOrderByRequestedAtDesc(sessionId);
+    Integer routeBlockedAfterSec = session.routeBlockedAfterSec();
+    String summaryText = RouteRecalculationReportNarrative.appendToSummary(
+        TrainingReportNarrativeGenerator.buildSummary(narrativeInput), recalculations, routeBlockedAfterSec);
+    List<RecommendationPoint> recommendations = RouteRecalculationReportNarrative.prependRecommendation(
+        TrainingReportNarrativeGenerator.buildRecommendations(narrativeInput), recalculations, routeBlockedAfterSec);
 
     TrainingReport report = TrainingReport.create(
         grade, overallScore,
