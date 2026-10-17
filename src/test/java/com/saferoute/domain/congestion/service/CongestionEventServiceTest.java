@@ -10,6 +10,7 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -34,6 +35,7 @@ import com.saferoute.domain.telemetry.dynamo.entity.CongestionEventItem;
 import com.saferoute.domain.telemetry.dynamo.entity.CongestionEventType;
 import com.saferoute.domain.telemetry.dynamo.entity.EventProcessingStatus;
 import com.saferoute.domain.telemetry.dynamo.repository.CongestionEventRepository;
+import com.saferoute.domain.telemetry.dynamo.repository.CurrentCongestionEventRepository;
 import com.saferoute.domain.telemetry.dynamo.repository.IdempotentSaveResult;
 import com.saferoute.domain.training.entity.TrainingSession;
 import com.saferoute.domain.training.entity.TrainingStatus;
@@ -50,6 +52,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -64,6 +67,9 @@ class CongestionEventServiceTest {
 
     @Mock
     private CongestionEventRepository congestionEventRepository;
+
+    @Mock
+    private CurrentCongestionEventRepository currentCongestionEventRepository;
 
     @Mock
     private TrainingSessionRepository trainingSessionRepository;
@@ -235,6 +241,30 @@ class CongestionEventServiceTest {
 
         verify(trainingEventPublisher, times(1)).publishCongestionEventReceived(
                 eq(sessionId), eq(List.of(edgeAId)), any());
+    }
+
+    @Test
+    @DisplayName("재탐색을 트리거하기 전에 CCTV별 최신 즉시 이벤트를 먼저 기록한다")
+    void reportCongestionEvent_recordsCurrentEventBeforeTriggering() {
+        TrainingSession session = mock(TrainingSession.class);
+        given(session.getId()).willReturn(sessionId);
+        given(trainingSessionRepository.findByIdAndStatusAndScenario_Building_Id(
+                sessionId, TrainingStatus.RUNNING, buildingId)).willReturn(Optional.of(session));
+        givenSaveCreatesItem();
+        givenProcessingClaimed();
+        givenAffectedEdges(edge(UUID.randomUUID()));
+
+        // headcount=13 -> density=3.25 -> CROWDED
+        service.reportCongestionEvent(cctv, request(13));
+
+        InOrder order = inOrder(currentCongestionEventRepository, routeRecalculationService);
+        order.verify(currentCongestionEventRepository).updateIfLatest(argThat(item ->
+                item.getCctvCode().equals("CCTV_001")
+                        && item.getEventType() == CongestionEventType.CONGESTION_STARTED
+                        && item.getCongestionLevel() == CongestionLevel.CROWDED
+                        && item.getDetectedAt() == 2_000L));
+        order.verify(routeRecalculationService).triggerAsync(
+                any(), any(), any(), any(), any(), anyDouble(), anyLong());
     }
 
     @Test

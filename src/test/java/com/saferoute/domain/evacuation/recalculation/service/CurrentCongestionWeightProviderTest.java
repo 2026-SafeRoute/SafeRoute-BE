@@ -20,7 +20,8 @@ import com.saferoute.domain.evacuation.grid.repository.MapEdgeGridCellRepository
 import com.saferoute.domain.telemetry.dynamo.entity.CongestionEventItem;
 import com.saferoute.domain.telemetry.dynamo.entity.CongestionEventType;
 import com.saferoute.domain.telemetry.dynamo.entity.CurrentCctvStateItem;
-import com.saferoute.domain.telemetry.dynamo.repository.CongestionEventRepository;
+import com.saferoute.domain.telemetry.dynamo.entity.CurrentCongestionEventItem;
+import com.saferoute.domain.telemetry.dynamo.repository.CurrentCongestionEventRepository;
 import com.saferoute.domain.telemetry.dynamo.repository.CurrentCctvStateRepository;
 import java.time.Instant;
 import java.util.List;
@@ -60,7 +61,7 @@ class CurrentCongestionWeightProviderTest {
     private CongestionConfigService congestionConfigService;
 
     @Mock
-    private CongestionEventRepository congestionEventRepository;
+    private CurrentCongestionEventRepository currentCongestionEventRepository;
 
     // 기본 설정(stateStaleAfterSec = 15초)
     @BeforeEach
@@ -79,18 +80,15 @@ class CurrentCongestionWeightProviderTest {
         return CurrentCctvStateItem.create(sessionId, cctvCode, 1.0, 1, 1.0, level, lastDetectedAt, 1L);
     }
 
-    private CongestionEventItem event(String cctvCode, CongestionEventType type, CongestionLevel level,
+    private CurrentCongestionEventItem event(String cctvCode, CongestionEventType type, CongestionLevel level,
             long detectedAt) {
-        return CongestionEventItem.received(UUID.randomUUID(), sessionId, cctvCode, type, detectedAt,
-                2, 3.1, level, 3.1, level, 1L, null);
+        return CurrentCongestionEventItem.from(CongestionEventItem.received(UUID.randomUUID(), sessionId,
+                cctvCode, type, detectedAt, 2, 3.1, level, 3.1, level, 1L, null));
     }
 
-    private void latestEvents(CongestionEventItem... events) {
-        Map<String, CongestionEventItem> byCctv = new java.util.HashMap<>();
-        for (CongestionEventItem event : events) {
-            byCctv.put(event.getCctvCode(), event);
-        }
-        given(congestionEventRepository.findLatestPerCctvBySessionId(sessionId.toString())).willReturn(byCctv);
+    private void latestEvents(CurrentCongestionEventItem... events) {
+        given(currentCongestionEventRepository.findAllBySessionId(sessionId.toString()))
+                .willReturn(List.of(events));
     }
 
     private long secondsAgo(int seconds) {
