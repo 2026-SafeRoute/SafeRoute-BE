@@ -141,7 +141,11 @@ public class TrainingScenarioService {
     // 시작 전(SCHEDULED) 세션만 있으면 그 세션을 먼저 지우고 삭제한다)
     @Transactional
     public void deleteScenario(UUID id, String email) {
-        TrainingScenario scenario = findByIdAndEmail(id, email);
+        // TrainingSessionService.start와 같은 시나리오 행 잠금. 아래 상태 검사 이후 세션이 RUNNING으로 바뀌어
+        // 진행 중인 훈련이 함께 지워지는 걸 막는다.
+        String schoolName = schoolContextService.getSchoolName(email);
+        TrainingScenario scenario = scenarioRepository.findForUpdateByIdAndAdmin_SchoolName(id, schoolName)
+                .orElseThrow(() -> new ApiException(TrainingErrorCode.TRAINING_SCENARIO_NOT_FOUND));
         if (trainingSessionRepository.existsByScenario_IdAndStatusNot(id, TrainingStatus.SCHEDULED)) {
             throw new ApiException(TrainingErrorCode.SCENARIO_DELETE_NOT_ALLOWED);
         }

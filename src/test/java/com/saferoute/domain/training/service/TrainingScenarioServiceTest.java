@@ -432,7 +432,7 @@ class TrainingScenarioServiceTest {
         UUID scenarioId = UUID.randomUUID();
         TrainingScenario scenario = scenarioWithId(scenarioId);
         given(schoolContextService.getSchoolName(EMAIL)).willReturn(SCHOOL_NAME);
-        given(scenarioRepository.findByIdAndAdmin_SchoolName(scenarioId, SCHOOL_NAME))
+        given(scenarioRepository.findForUpdateByIdAndAdmin_SchoolName(scenarioId, SCHOOL_NAME))
                 .willReturn(Optional.of(scenario));
         given(trainingSessionRepository.existsByScenario_IdAndStatusNot(scenarioId, TrainingStatus.SCHEDULED))
                 .willReturn(false);
@@ -449,7 +449,7 @@ class TrainingScenarioServiceTest {
         UUID scenarioId = UUID.randomUUID();
         TrainingScenario scenario = scenarioWithId(scenarioId);
         given(schoolContextService.getSchoolName(EMAIL)).willReturn(SCHOOL_NAME);
-        given(scenarioRepository.findByIdAndAdmin_SchoolName(scenarioId, SCHOOL_NAME))
+        given(scenarioRepository.findForUpdateByIdAndAdmin_SchoolName(scenarioId, SCHOOL_NAME))
                 .willReturn(Optional.of(scenario));
         given(trainingSessionRepository.existsByScenario_IdAndStatusNot(scenarioId, TrainingStatus.SCHEDULED))
                 .willReturn(true);

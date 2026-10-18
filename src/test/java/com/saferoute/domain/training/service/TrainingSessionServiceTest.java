@@ -102,6 +102,10 @@ class TrainingSessionServiceTest {
         org.mockito.Mockito.lenient()
                 .when(schoolContextService.getSchoolName(EMAIL))
                 .thenReturn(SCHOOL_NAME);
+        // start()가 시나리오 삭제와 같은 시나리오 행 잠금을 먼저 잡는다. 기본값은 잠금 성공.
+        org.mockito.Mockito.lenient()
+                .when(trainingScenarioRepository.findForUpdateByIdAndAdmin_SchoolName(any(), eq(SCHOOL_NAME)))
+                .thenReturn(Optional.of(mock(TrainingScenario.class)));
     }
 
     private TrainingSession sessionWithStatus(TrainingStatus status) {
@@ -804,5 +808,20 @@ class TrainingSessionServiceTest {
         CurrentRouteResponse response = trainingSessionService.getCurrentRoute(sessionId, EMAIL);
 
         assertThat(response).isEqualTo(expected);
+    }
+
+    @Test
+    @DisplayName("시나리오가 이미 삭제됐으면 훈련 시작은 시나리오 없음으로 거부된다")
+    void start_scenarioAlreadyDeleted_throwsScenarioNotFound() {
+        TrainingSession session = sessionWithStatus(TrainingStatus.SCHEDULED);
+        given(trainingSessionRepository.findByIdAndScenario_Building_SchoolName(sessionId, SCHOOL_NAME))
+                .willReturn(Optional.of(session));
+        given(trainingScenarioRepository.findForUpdateByIdAndAdmin_SchoolName(any(), eq(SCHOOL_NAME)))
+                .willReturn(Optional.empty());
+
+        assertThatThrownBy(() -> trainingSessionService.start(sessionId, EMAIL))
+                .isInstanceOf(ApiException.class)
+                .extracting(exception -> ((ApiException) exception).getErrorCode())
+                .isEqualTo(TrainingErrorCode.TRAINING_SCENARIO_NOT_FOUND);
     }
 }
