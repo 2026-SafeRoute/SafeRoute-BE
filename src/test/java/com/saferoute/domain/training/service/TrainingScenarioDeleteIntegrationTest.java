@@ -34,7 +34,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.transaction.support.TransactionTemplate;
 
 // 대피 설정(발화점·시작점)을 등록한 시나리오가 세션이 없는데도 fire_zones FK 때문에 삭제되지 않던 문제를
-// 실제 DB로 재현·검증한다 (이슈 #282). 세션이 있으면 훈련 기록 보존을 위해 기존처럼 막혀야 한다.
+// 실제 DB로 재현·검증한다 (이슈 #282). 훈련이 시작된 세션이 있으면 훈련 기록 보존을 위해 막히고,
+// 시작 전(SCHEDULED) 세션만 있으면 세션과 함께 삭제된다 (이슈 #295).
 @SpringBootTest
 class TrainingScenarioDeleteIntegrationTest {
 
@@ -61,12 +62,16 @@ class TrainingScenarioDeleteIntegrationTest {
     @Autowired
     private TransactionTemplate transactionTemplate;
 
+    private enum SessionKind {
+        NONE, SCHEDULED, RUNNING
+    }
+
     private record Fixture(UUID scenarioId, String email) {
     }
 
     @Test
     void deleteScenario_withEvacuationSetupAndNoSession_deletesScenarioAndFireOrigin() {
-        Fixture fixture = transactionTemplate.execute(status -> createScenarioWithEvacuationSetup("nosession", false));
+        Fixture fixture = transactionTemplate.execute(status -> createScenarioWithEvacuationSetup("nosession", SessionKind.NONE));
 
         assertThatCode(() -> trainingScenarioService.deleteScenario(fixture.scenarioId(), fixture.email()))
                 .doesNotThrowAnyException();
@@ -76,8 +81,22 @@ class TrainingScenarioDeleteIntegrationTest {
     }
 
     @Test
-    void deleteScenario_withSession_isRejectedAndFireOriginKept() {
-        Fixture fixture = transactionTemplate.execute(status -> createScenarioWithEvacuationSetup("session", true));
+    void deleteScenario_withScheduledSessionOnly_deletesScenarioAndSession() {
+        Fixture fixture = transactionTemplate.execute(
+                status -> createScenarioWithEvacuationSetup("scheduled", SessionKind.SCHEDULED));
+
+        assertThatCode(() -> trainingScenarioService.deleteScenario(fixture.scenarioId(), fixture.email()))
+                .doesNotThrowAnyException();
+
+        assertThat(trainingScenarioRepository.findById(fixture.scenarioId())).isEmpty();
+        assertThat(trainingSessionRepository.existsByScenario_Id(fixture.scenarioId())).isFalse();
+        assertThat(fireZoneRepository.findByScenario_IdAndIsManualAddTrue(fixture.scenarioId())).isEmpty();
+    }
+
+    @Test
+    void deleteScenario_withStartedSession_isRejectedAndFireOriginKept() {
+        Fixture fixture = transactionTemplate.execute(
+                status -> createScenarioWithEvacuationSetup("started", SessionKind.RUNNING));
 
         assertThatThrownBy(() -> trainingScenarioService.deleteScenario(fixture.scenarioId(), fixture.email()))
                 .isInstanceOf(ApiException.class)
@@ -85,10 +104,11 @@ class TrainingScenarioDeleteIntegrationTest {
                 .isEqualTo(TrainingErrorCode.SCENARIO_DELETE_NOT_ALLOWED);
 
         assertThat(trainingScenarioRepository.findById(fixture.scenarioId())).isPresent();
+        assertThat(trainingSessionRepository.existsByScenario_Id(fixture.scenarioId())).isTrue();
         assertThat(fireZoneRepository.findByScenario_IdAndIsManualAddTrue(fixture.scenarioId())).isNotEmpty();
     }
 
-    private Fixture createScenarioWithEvacuationSetup(String suffix, boolean withSession) {
+    private Fixture createScenarioWithEvacuationSetup(String suffix, SessionKind sessionKind) {
         Building building = buildingRepository.save(Building.create(
                 "시나리오삭제 건물 " + suffix, "부산광역시 해운대구 우동 2-" + suffix, BuildingType.CLASSROOM, SCHOOL_NAME));
         Floor floor = Floor.create(building, 1);
@@ -105,8 +125,12 @@ class TrainingScenarioDeleteIntegrationTest {
         TrainingScenario scenario = trainingScenarioRepository.save(TrainingScenario.create(
                 "삭제 시나리오 " + suffix, 10, Instant.now(), false, FireSpreadSpeed.FAST, building, admin, start));
         fireZoneRepository.save(FireZone.createOrigin(scenario, floor, originCell));
-        if (withSession) {
-            trainingSessionRepository.save(TrainingSession.schedule(admin, scenario));
+        if (sessionKind != SessionKind.NONE) {
+            TrainingSession session = TrainingSession.schedule(admin, scenario);
+            if (sessionKind == SessionKind.RUNNING) {
+                session.start(Instant.now());
+            }
+            trainingSessionRepository.save(session);
         }
         return new Fixture(scenario.getId(), email);
     }

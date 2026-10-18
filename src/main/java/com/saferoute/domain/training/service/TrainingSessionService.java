@@ -164,6 +164,15 @@ public class TrainingSessionService {
   public TrainingSessionResponse start(UUID sessionId, String email) {
     TrainingSession session = findSession(sessionId, email);
 
+    // 시나리오 삭제(TrainingScenarioService.deleteScenario)와 같은 시나리오 행 잠금을 먼저 잡는다. 삭제가
+    // "시작된 세션 없음"을 확인한 뒤 SCHEDULED 세션을 지우는 사이에 이 세션이 RUNNING으로 바뀌면 진행 중인
+    // 훈련이 지워지므로, 둘 중 하나가 끝난 뒤에 다른 쪽이 상태를 검사하도록 직렬화한다. 삭제가 먼저 끝났다면
+    // 시나리오가 없어 여기서 NOT_FOUND로 끝난다.
+    String schoolName = schoolContextService.getSchoolName(email);
+    trainingScenarioRepository
+        .findForUpdateByIdAndAdmin_SchoolName(session.getScenario().getId(), schoolName)
+        .orElseThrow(() -> new ApiException(TrainingErrorCode.TRAINING_SCENARIO_NOT_FOUND));
+
     if (session.getStatus() != TrainingStatus.SCHEDULED) {
       throw new ApiException(TrainingErrorCode.INVALID_STATUS_TRANSITION);
     }

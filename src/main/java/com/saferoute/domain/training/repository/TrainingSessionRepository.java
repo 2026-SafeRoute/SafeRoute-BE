@@ -53,7 +53,15 @@ public interface TrainingSessionRepository extends JpaRepository<TrainingSession
 
   boolean existsByScenario_Id(UUID scenarioId);
 
-  // 목록 조회에서 시나리오별로 deletable을 N+1 없이 계산하기 위해, 세션이 하나라도 있는 시나리오 id만 모아서 가져온다.
-  @Query("select distinct s.scenario.id from TrainingSession s where s.scenario.id in :scenarioIds")
-  Set<UUID> findScenarioIdsWithAnySession(@Param("scenarioIds") Collection<UUID> scenarioIds);
+  // 훈련이 한 번이라도 시작된(SCHEDULED가 아닌) 세션이 있는지. 있으면 시나리오 삭제가 막힌다.
+  boolean existsByScenario_IdAndStatusNot(UUID scenarioId, TrainingStatus status);
+
+  // 시작 전(SCHEDULED) 세션 정리용. 시나리오 삭제 시 시작된 세션이 없다는 걸 확인한 뒤에만 호출한다.
+  void deleteAllByScenario_Id(UUID scenarioId);
+
+  // 목록 조회에서 시나리오별로 deletable을 N+1 없이 계산하기 위해, 훈련이 시작된(SCHEDULED가 아닌)
+  // 세션이 있는 시나리오 id만 모아서 가져온다.
+  @Query("select distinct s.scenario.id from TrainingSession s "
+      + "where s.scenario.id in :scenarioIds and s.status <> com.saferoute.domain.training.entity.TrainingStatus.SCHEDULED")
+  Set<UUID> findScenarioIdsWithStartedSession(@Param("scenarioIds") Collection<UUID> scenarioIds);
 }
