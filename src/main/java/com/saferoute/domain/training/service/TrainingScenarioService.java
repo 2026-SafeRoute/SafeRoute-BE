@@ -7,6 +7,7 @@ import com.saferoute.domain.training.dto.ScenarioResponse;
 import com.saferoute.domain.training.dto.UpdateScenarioRequest;
 import com.saferoute.domain.training.entity.ScenarioStatus;
 import com.saferoute.domain.training.entity.TrainingScenario;
+import com.saferoute.domain.training.entity.TrainingStatus;
 import com.saferoute.domain.report.repository.TrainingReportRepository;
 import com.saferoute.domain.training.repository.FireZoneRepository;
 import com.saferoute.domain.training.repository.TrainingScenarioRepository;
@@ -41,7 +42,7 @@ public class TrainingScenarioService {
     private final UserRepository userRepository;
     private final SchoolContextService schoolContextService;
 
-    // 목록 조회 (deletable = 연결된 훈련 세션이 하나도 없는 시나리오인지 여부, reportId = 리포트가 있으면 그 id)
+    // 목록 조회 (deletable = 훈련이 시작된 세션이 하나도 없는 시나리오인지 여부, reportId = 리포트가 있으면 그 id)
     public List<ScenarioResponse> getScenarios(String email) {
         String schoolName = schoolContextService.getSchoolName(email);
         List<TrainingScenario> scenarios =
@@ -51,7 +52,7 @@ public class TrainingScenarioService {
         }
 
         List<UUID> scenarioIds = scenarios.stream().map(TrainingScenario::getId).toList();
-        Set<UUID> scenarioIdsWithSession = trainingSessionRepository.findScenarioIdsWithAnySession(scenarioIds);
+        Set<UUID> scenarioIdsWithStartedSession = trainingSessionRepository.findScenarioIdsWithStartedSession(scenarioIds);
         Map<UUID, String> reportIdsByScenarioId = trainingReportRepository.findReportIdsByScenarioIds(scenarioIds)
                 .stream()
                 .collect(Collectors.toMap(
@@ -61,7 +62,7 @@ public class TrainingScenarioService {
         return scenarios.stream()
                 .map(scenario -> ScenarioResponse.from(
                         scenario,
-                        !scenarioIdsWithSession.contains(scenario.getId()),
+                        !scenarioIdsWithStartedSession.contains(scenario.getId()),
                         reportIdsByScenarioId.get(scenario.getId())))
                 .toList();
     }
@@ -136,13 +137,16 @@ public class TrainingScenarioService {
         return ScenarioResponse.from(scenario);
     }
 
-    // 삭제 (훈련 세션이 하나라도 연결된 시나리오는 삭제 불가 - 과거 훈련 기록 보존을 위해)
+    // 삭제 (훈련이 시작된 세션이 하나라도 있는 시나리오는 삭제 불가 - 과거 훈련 기록 보존을 위해.
+    // 시작 전(SCHEDULED) 세션만 있으면 그 세션을 먼저 지우고 삭제한다)
     @Transactional
     public void deleteScenario(UUID id, String email) {
         TrainingScenario scenario = findByIdAndEmail(id, email);
-        if (trainingSessionRepository.existsByScenario_Id(id)) {
+        if (trainingSessionRepository.existsByScenario_IdAndStatusNot(id, TrainingStatus.SCHEDULED)) {
             throw new ApiException(TrainingErrorCode.SCENARIO_DELETE_NOT_ALLOWED);
         }
+        // SCHEDULED 세션은 재탐색 기록·리포트가 생기기 전이라 참조하는 행이 없으므로 그대로 지울 수 있다.
+        trainingSessionRepository.deleteAllByScenario_Id(id);
         // 세션이 없다는 건 훈련이 한 번도 돌지 않았다는 뜻이라, 남아 있는 FireZone은 대피 설정의 발화점(설정값)뿐이다.
         // fire_zones.scenario_id가 시나리오를 참조해 그대로 지우면 FK 위반이 나므로 먼저 지운다. DB FK를 CASCADE로
         // 두지 않는 이유는, 다른 경로로 시나리오가 지워질 때 실제 훈련 기록(확산 이력)까지 조용히 지워지지 않게 하기 위함이다.

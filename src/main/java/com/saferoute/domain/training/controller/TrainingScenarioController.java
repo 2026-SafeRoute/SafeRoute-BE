@@ -41,9 +41,10 @@ public class TrainingScenarioController {
                     건물을 지정하지 않은 DRAFT 시나리오도 작성자(admin) 소속 기준으로 함께
                     조회됩니다.
 
-                    각 시나리오의 deletable은 해당 시나리오에 연결된 훈련 세션이 하나도 없을 때만
-                    true입니다. 세션이 하나라도 있으면 과거 훈련 기록 보존을 위해 삭제가
-                    막히므로, 프론트는 deletable = false인 시나리오에서는 삭제 버튼을 비활성화해야
+                    각 시나리오의 deletable은 훈련이 시작된 세션(SCHEDULED가 아닌 세션)이 하나도
+                    없을 때만 true입니다. 세션이 없거나 전부 시작 전(SCHEDULED)이면 true이고,
+                    시작된 세션이 하나라도 있으면 과거 훈련 기록 보존을 위해 삭제가 막히므로,
+                    프론트는 deletable = false인 시나리오에서는 삭제 버튼을 비활성화해야
                     합니다. reportId는 해당 시나리오의 훈련 리포트가 이미 생성되어 있으면 그
                     id를, 아직 없으면 null을 반환합니다.
 
@@ -162,9 +163,10 @@ public class TrainingScenarioController {
     @Operation(
             summary = "훈련 시나리오 삭제",
             description = """
-                    시나리오를 삭제합니다. 연결된 훈련 세션이 단 하나라도 존재하면(과거에 종료된
-                    세션 포함) 과거 훈련 기록 보존을 위해 삭제가 거부되므로, 프론트는 목록
-                    조회 응답의 deletable 필드로 삭제 가능 여부를 먼저 확인해야 합니다.
+                    시나리오를 삭제합니다. 훈련이 시작된 세션(RUNNING, 종료된 세션 등 SCHEDULED가
+                    아닌 세션)이 하나라도 있으면 과거 훈련 기록 보존을 위해 삭제가 거부됩니다.
+                    시작 전(SCHEDULED) 세션만 있는 경우에는 그 세션도 함께 삭제됩니다. 프론트는
+                    목록 조회 응답의 deletable 필드로 삭제 가능 여부를 먼저 확인해야 합니다.
 
                     성공 시 본문 없이 204 No Content를 반환합니다.
                     """
