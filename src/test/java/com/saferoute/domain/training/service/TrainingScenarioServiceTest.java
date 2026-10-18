@@ -18,6 +18,7 @@ import com.saferoute.domain.training.dto.UpdateScenarioRequest;
 import com.saferoute.domain.training.entity.FireSpreadSpeed;
 import com.saferoute.domain.training.entity.ScenarioStatus;
 import com.saferoute.domain.training.entity.TrainingScenario;
+import com.saferoute.domain.training.entity.TrainingStatus;
 import com.saferoute.domain.training.repository.TrainingScenarioRepository;
 import com.saferoute.domain.training.repository.TrainingSessionRepository;
 import com.saferoute.domain.user.entity.User;
@@ -319,14 +320,14 @@ class TrainingScenarioServiceTest {
     // === getScenarios (deletable) ===
 
     @Test
-    @DisplayName("연결된 훈련 세션이 없는 시나리오는 deletable=true로 응답한다")
+    @DisplayName("훈련이 시작된 세션이 없는(세션이 없거나 SCHEDULED뿐인) 시나리오는 deletable=true로 응답한다")
     void getScenarios_scenarioWithoutSession_isDeletable() {
         UUID scenarioId = UUID.randomUUID();
         TrainingScenario scenario = scenarioWithId(scenarioId);
         given(schoolContextService.getSchoolName(EMAIL)).willReturn(SCHOOL_NAME);
         given(scenarioRepository.findAllByAdmin_SchoolNameOrderByCreatedAtDesc(SCHOOL_NAME))
                 .willReturn(List.of(scenario));
-        given(trainingSessionRepository.findScenarioIdsWithAnySession(List.of(scenarioId)))
+        given(trainingSessionRepository.findScenarioIdsWithStartedSession(List.of(scenarioId)))
                 .willReturn(Set.of());
         given(trainingReportRepository.findReportIdsByScenarioIds(List.of(scenarioId)))
                 .willReturn(List.of());
@@ -338,14 +339,14 @@ class TrainingScenarioServiceTest {
     }
 
     @Test
-    @DisplayName("연결된 훈련 세션이 하나라도 있는 시나리오는 deletable=false로 응답한다")
+    @DisplayName("훈련이 시작된 세션이 하나라도 있는 시나리오는 deletable=false로 응답한다")
     void getScenarios_scenarioWithSession_isNotDeletable() {
         UUID scenarioId = UUID.randomUUID();
         TrainingScenario scenario = scenarioWithId(scenarioId);
         given(schoolContextService.getSchoolName(EMAIL)).willReturn(SCHOOL_NAME);
         given(scenarioRepository.findAllByAdmin_SchoolNameOrderByCreatedAtDesc(SCHOOL_NAME))
                 .willReturn(List.of(scenario));
-        given(trainingSessionRepository.findScenarioIdsWithAnySession(List.of(scenarioId)))
+        given(trainingSessionRepository.findScenarioIdsWithStartedSession(List.of(scenarioId)))
                 .willReturn(Set.of(scenarioId));
         given(trainingReportRepository.findReportIdsByScenarioIds(List.of(scenarioId)))
                 .willReturn(List.of());
@@ -365,7 +366,7 @@ class TrainingScenarioServiceTest {
         given(schoolContextService.getSchoolName(EMAIL)).willReturn(SCHOOL_NAME);
         given(scenarioRepository.findAllByAdmin_SchoolNameOrderByCreatedAtDesc(SCHOOL_NAME))
                 .willReturn(List.of(scenario));
-        given(trainingSessionRepository.findScenarioIdsWithAnySession(List.of(scenarioId)))
+        given(trainingSessionRepository.findScenarioIdsWithStartedSession(List.of(scenarioId)))
                 .willReturn(Set.of(scenarioId));
         given(trainingReportRepository.findReportIdsByScenarioIds(List.of(scenarioId)))
                 .willReturn(List.of(scenarioReportId(scenarioId, reportId)));
@@ -384,7 +385,7 @@ class TrainingScenarioServiceTest {
         given(schoolContextService.getSchoolName(EMAIL)).willReturn(SCHOOL_NAME);
         given(scenarioRepository.findAllByAdmin_SchoolNameOrderByCreatedAtDesc(SCHOOL_NAME))
                 .willReturn(List.of(scenario));
-        given(trainingSessionRepository.findScenarioIdsWithAnySession(List.of(scenarioId)))
+        given(trainingSessionRepository.findScenarioIdsWithStartedSession(List.of(scenarioId)))
                 .willReturn(Set.of());
         given(trainingReportRepository.findReportIdsByScenarioIds(List.of(scenarioId)))
                 .willReturn(List.of());
@@ -419,41 +420,45 @@ class TrainingScenarioServiceTest {
         List<ScenarioResponse> responses = trainingScenarioService.getScenarios(EMAIL);
 
         assertThat(responses).isEmpty();
-        verify(trainingSessionRepository, never()).findScenarioIdsWithAnySession(org.mockito.ArgumentMatchers.any());
+        verify(trainingSessionRepository, never()).findScenarioIdsWithStartedSession(org.mockito.ArgumentMatchers.any());
         verify(trainingReportRepository, never()).findReportIdsByScenarioIds(org.mockito.ArgumentMatchers.any());
     }
 
     // === deleteScenario ===
 
     @Test
-    @DisplayName("연결된 훈련 세션이 없으면 시나리오를 삭제할 수 있다")
+    @DisplayName("훈련이 시작된 세션이 없으면 시나리오를 삭제하고 시작 전 세션도 함께 지운다")
     void deleteScenario_withoutSession_deletesScenario() {
         UUID scenarioId = UUID.randomUUID();
         TrainingScenario scenario = scenarioWithId(scenarioId);
         given(schoolContextService.getSchoolName(EMAIL)).willReturn(SCHOOL_NAME);
         given(scenarioRepository.findByIdAndAdmin_SchoolName(scenarioId, SCHOOL_NAME))
                 .willReturn(Optional.of(scenario));
-        given(trainingSessionRepository.existsByScenario_Id(scenarioId)).willReturn(false);
+        given(trainingSessionRepository.existsByScenario_IdAndStatusNot(scenarioId, TrainingStatus.SCHEDULED))
+                .willReturn(false);
 
         trainingScenarioService.deleteScenario(scenarioId, EMAIL);
 
+        verify(trainingSessionRepository).deleteAllByScenario_Id(scenarioId);
         verify(scenarioRepository).delete(scenario);
     }
 
     @Test
-    @DisplayName("연결된 훈련 세션이 하나라도 있으면 시나리오 삭제가 거부된다")
+    @DisplayName("훈련이 시작된 세션이 하나라도 있으면 시나리오 삭제가 거부된다")
     void deleteScenario_withSession_throwsException() {
         UUID scenarioId = UUID.randomUUID();
         TrainingScenario scenario = scenarioWithId(scenarioId);
         given(schoolContextService.getSchoolName(EMAIL)).willReturn(SCHOOL_NAME);
         given(scenarioRepository.findByIdAndAdmin_SchoolName(scenarioId, SCHOOL_NAME))
                 .willReturn(Optional.of(scenario));
-        given(trainingSessionRepository.existsByScenario_Id(scenarioId)).willReturn(true);
+        given(trainingSessionRepository.existsByScenario_IdAndStatusNot(scenarioId, TrainingStatus.SCHEDULED))
+                .willReturn(true);
 
         assertThatThrownBy(() -> trainingScenarioService.deleteScenario(scenarioId, EMAIL))
                 .isInstanceOf(ApiException.class)
                 .extracting(exception -> ((ApiException) exception).getErrorCode())
                 .isEqualTo(TrainingErrorCode.SCENARIO_DELETE_NOT_ALLOWED);
+        verify(trainingSessionRepository, never()).deleteAllByScenario_Id(scenarioId);
         verify(scenarioRepository, never()).delete(scenario);
     }
 }
