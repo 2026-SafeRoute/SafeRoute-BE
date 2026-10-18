@@ -31,7 +31,7 @@ public class RouteDiagnosisController {
                     시작 지점이 정해지지 않은 화면이므로 모든 시작 후보를 기준으로 그래프 연결만 확인합니다.
 
                     - unreachableNodeIds: 어떤 탈출구(EXIT 대상)에도 도달할 수 없는 노드.
-                      CCTV·유도등 위치 노드(CUSTOM)는 대피 경로 노드가 아니므로 포함하지 않습니다.
+                      CCTV·유도등 위치 노드(CUSTOM)와 방 노드(ROOM)는 대피 경로 노드가 아니므로 포함하지 않습니다.
                     - undesignatedStairNodeIds: 타입이 STAIR·EXIT인데 탈출구로 지정하지 않은 노드. 참고 정보라
                       ready에는 영향이 없습니다.
                     - startCandidates: 시작 후보(START 타입, 또는 시작 후보로 지정한 DOOR)마다 갈 수 있는 탈출구 수.

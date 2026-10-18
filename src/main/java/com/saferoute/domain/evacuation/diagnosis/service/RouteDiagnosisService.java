@@ -75,9 +75,10 @@ public class RouteDiagnosisService {
 
         // 탈출구에서 거꾸로 따라가 닿는 노드 = 탈출구까지 갈 수 있는 노드.
         // CCTV·유도등 위치 노드(CUSTOM)는 대피 경로 노드가 아니라 엣지에 안 붙어 있어도 정상이므로 빼고 본다.
+        // 방(ROOM)도 시작 지점이 될 수 없고 문과 잇는 것이 선택 사항이라 같은 이유로 뺀다.
         Set<UUID> canReachExit = reachableFrom(exitIds, backward);
         List<UUID> unreachableNodeIds = nodes.stream()
-                .filter(node -> node.getType() != NodeType.CUSTOM)
+                .filter(node -> node.getType() != NodeType.CUSTOM && node.getType() != NodeType.ROOM)
                 .map(MapNode::getId)
                 .filter(id -> !canReachExit.contains(id))
                 .toList();

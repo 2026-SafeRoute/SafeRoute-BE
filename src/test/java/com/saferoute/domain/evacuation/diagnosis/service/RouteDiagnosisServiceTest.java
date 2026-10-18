@@ -140,6 +140,19 @@ class RouteDiagnosisServiceTest {
         }
 
         @Test
+        @DisplayName("엣지에 안 붙은 방(ROOM) 노드는 끊긴 노드로 세지 않는다")
+        void unconnectedRoomIsExcluded() {
+            MapNode start = node("S", NodeType.START, false);
+            MapNode exit = node("E", NodeType.STAIR, true);
+            MapNode room = node("R", NodeType.ROOM, false);
+            givenGraph(List.of(start, exit, room), List.of(edge(start, exit, 1, true)));
+
+            FloorRouteDiagnosisResponse response = routeDiagnosisService.diagnoseFloor(floorId, EMAIL);
+
+            assertThat(response.unreachableNodeIds()).isEmpty();
+        }
+
+        @Test
         @DisplayName("모든 시작 후보가 탈출구 2곳에 닿고 끊긴 노드가 없으면 ready")
         void allCandidatesReachTwoExits_ready() {
             MapNode start = node("S", NodeType.START, false);
