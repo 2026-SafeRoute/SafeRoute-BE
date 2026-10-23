@@ -88,15 +88,25 @@ public final class TrainingReportNarrativeGenerator {
                     .max(Comparator.comparingDouble(ZoneDensityPoint::getAvgDensityPercent));
 
             String title = worstZone.map(z -> z.getZoneName() + " 분산 유도").orElse("혼잡 구간 분산 유도");
+            // 밀집 구역이 있어도 CCTV 병목 위치를 알면 함께 적는다 - 구역 밀집도와 실제 병목 감지 위치는 별개 정보다.
             String location = input.bottleneckLocation();
+            String locationDetail = location != null
+                    ? String.format("%s에서 병목(혼잡) %d회 감지", location, input.bottleneckCount())
+                    : null;
             String description = worstZone
-                    .map(z -> String.format("평균 밀집도 %.1f%%로 병목 위험 구간", z.getAvgDensityPercent()))
-                    .orElse(location != null
-                            ? String.format("%s에서 병목(혼잡) %d회 감지", location, input.bottleneckCount())
+                    .map(z -> {
+                        String zoneDetail = String.format("평균 밀집도 %.1f%%로 병목 위험 구간", z.getAvgDensityPercent());
+                        return locationDetail != null ? zoneDetail + ", " + locationDetail : zoneDetail;
+                    })
+                    .orElse(locationDetail != null
+                            ? locationDetail
                             : String.format("훈련 중 병목(혼잡) %d회 감지", input.bottleneckCount()));
             String narrative = worstZone
-                    .map(z -> String.format("%s 평균 밀집도가 %.1f%%로 병목이 발생했습니다.",
-                            z.getZoneName(), z.getAvgDensityPercent()))
+                    .map(z -> location != null
+                            ? String.format("%s 평균 밀집도가 %.1f%%로 병목이 발생했으며, %s에서 병목이 %d회 감지되었습니다.",
+                                    z.getZoneName(), z.getAvgDensityPercent(), location, input.bottleneckCount())
+                            : String.format("%s 평균 밀집도가 %.1f%%로 병목이 발생했습니다.",
+                                    z.getZoneName(), z.getAvgDensityPercent()))
                     .orElse(location != null
                             ? String.format("훈련 중 %s에서 병목이 %d회 감지되어 우회 경로 안내가 필요합니다.",
                                     location, input.bottleneckCount())

@@ -75,6 +75,28 @@ class TrainingReportNarrativeGeneratorTest {
     }
 
     @Test
+    @DisplayName("밀집 구역이 있어도 병목 위치를 알면 밀집도와 함께 CCTV·구간을 적는다")
+    void lowBottleneckScoreWithCrowdedZoneAndLocation_includesBoth() {
+        ReportNarrativeInput input = new ReportNarrativeInput(
+                "정기 훈련", 50, 50, BigDecimal.valueOf(100.0),
+                200, 300, 100,
+                5, 40,
+                0.0, 100,
+                80.0, Grade.B,
+                List.of(new ZoneDensityPoint("1층 로비", 92.0)),
+                "CCTV_122(복도 4 – 복도 5 구간)");
+
+        List<RecommendationPoint> recommendations = TrainingReportNarrativeGenerator.buildRecommendations(input);
+
+        assertThat(recommendations.get(0).getTitle()).isEqualTo("1층 로비 분산 유도");
+        assertThat(recommendations.get(0).getDescription())
+                .isEqualTo("평균 밀집도 92.0%로 병목 위험 구간, CCTV_122(복도 4 – 복도 5 구간)에서 병목(혼잡) 5회 감지");
+        assertThat(TrainingReportNarrativeGenerator.buildSummary(input))
+                .contains("1층 로비 평균 밀집도가 92.0%로 병목이 발생했으며, "
+                        + "CCTV_122(복도 4 – 복도 5 구간)에서 병목이 5회 감지되었습니다.");
+    }
+
+    @Test
     @DisplayName("병목 점수가 낮은데 임계치를 넘는 구역이 없으면 일반적인 문구로 대체한다")
     void lowBottleneckScoreWithoutCrowdedZone_usesGenericWording() {
         ReportNarrativeInput input = new ReportNarrativeInput(

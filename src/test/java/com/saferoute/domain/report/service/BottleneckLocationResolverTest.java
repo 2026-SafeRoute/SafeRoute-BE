@@ -60,11 +60,32 @@ class BottleneckLocationResolverTest {
         givenMonitoredCells(cctv, cellA, cellB);
         MapEdge minorEdge = edge("복도 5", "복도 6");
         MapEdge mainEdge = edge("복도 4", "복도 5");
-        List<MapEdgeGridCell> edgeMappings = List.of(mapping(minorEdge), mapping(mainEdge), mapping(mainEdge));
+        List<MapEdgeGridCell> edgeMappings =
+                List.of(mapping(minorEdge, cellA), mapping(mainEdge, cellA), mapping(mainEdge, cellB));
         given(mapEdgeGridCellRepository.findAllByGridCell_IdIn(List.of(cellA.getId(), cellB.getId())))
                 .willReturn(edgeMappings);
 
         assertThat(resolver.resolve(sessionId, buildingId)).contains("CCTV_122(복도 4 – 복도 5 구간)");
+    }
+
+    @Test
+    @DisplayName("겹침 수가 같으면 조회 순서와 무관하게 격자 순서상 먼저인 구간을 적는다")
+    void resolve_overlapTie_picksEdgeEarlierInGridOrderRegardlessOfQueryOrder() {
+        given(congestionEventRepository.countBottlenecksByCctvCode(sessionId.toString()))
+                .willReturn(Map.of("CCTV_122", 2L));
+        Cctv cctv = cctvInBuilding(buildingId);
+        given(cctvJpaRepository.findByCode("CCTV_122")).willReturn(Optional.of(cctv));
+        FloorGridCell firstCell = gridCell();
+        FloorGridCell secondCell = gridCell();
+        givenMonitoredCells(cctv, firstCell, secondCell);
+        MapEdge firstEdge = edge("복도 1", "복도 2");
+        MapEdge secondEdge = edge("복도 2", "복도 3");
+        // DB가 격자 순서와 반대로 돌려줘도 결과가 바뀌면 안 된다.
+        List<MapEdgeGridCell> edgeMappings = List.of(mapping(secondEdge, secondCell), mapping(firstEdge, firstCell));
+        given(mapEdgeGridCellRepository.findAllByGridCell_IdIn(List.of(firstCell.getId(), secondCell.getId())))
+                .willReturn(edgeMappings);
+
+        assertThat(resolver.resolve(sessionId, buildingId)).contains("CCTV_122(복도 1 – 복도 2 구간)");
     }
 
     @Test
@@ -169,14 +190,16 @@ class BottleneckLocationResolverTest {
         MapNode to = mock(MapNode.class);
         Mockito.lenient().when(to.getName()).thenReturn(toName);
         MapEdge edge = mock(MapEdge.class);
+        Mockito.lenient().when(edge.getId()).thenReturn(UUID.randomUUID());
         Mockito.lenient().when(edge.getFromNode()).thenReturn(from);
         Mockito.lenient().when(edge.getToNode()).thenReturn(to);
         return edge;
     }
 
-    private MapEdgeGridCell mapping(MapEdge edge) {
+    private MapEdgeGridCell mapping(MapEdge edge, FloorGridCell cell) {
         MapEdgeGridCell mapping = mock(MapEdgeGridCell.class);
-        given(mapping.getMapEdge()).willReturn(edge);
+        Mockito.lenient().when(mapping.getMapEdge()).thenReturn(edge);
+        Mockito.lenient().when(mapping.getGridCell()).thenReturn(cell);
         return mapping;
     }
 }

@@ -7,7 +7,9 @@ import com.saferoute.domain.evacuation.graph.entity.MapEdge;
 import com.saferoute.domain.evacuation.grid.entity.MapEdgeGridCell;
 import com.saferoute.domain.evacuation.grid.repository.MapEdgeGridCellRepository;
 import com.saferoute.domain.telemetry.dynamo.repository.CongestionEventRepository;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -73,14 +75,32 @@ public class BottleneckLocationResolver {
             return Optional.empty();
         }
 
-        // 감시 셀과 겹치는 셀 수가 가장 많은 엣지. 동률이면 먼저 나온(격자 순서상 앞선) 엣지를 쓴다.
+        // 감시 셀과 겹치는 셀 수가 가장 많은 엣지. 동률이면 격자 순서상 먼저 나오는 엣지를 쓴다.
+        // IN 조회는 순서를 보장하지 않으므로, 감시 셀의 격자 순서(gridCellIds 순서)로 다시 정렬한 뒤 집계한다.
+        // 같은 셀에 걸친 엣지끼리는 id 순으로 정해, 같은 데이터면 항상 같은 구간이 나오게 한다.
+        Map<UUID, Integer> cellOrder = new HashMap<>();
+        for (int i = 0; i < gridCellIds.size(); i++) {
+            cellOrder.putIfAbsent(gridCellIds.get(i), i);
+        }
+        List<MapEdgeGridCell> mappings = new ArrayList<>(mapEdgeGridCellRepository.findAllByGridCell_IdIn(gridCellIds));
+        mappings.sort(Comparator
+                .comparingInt((MapEdgeGridCell mapping) ->
+                        cellOrder.getOrDefault(mapping.getGridCell().getId(), Integer.MAX_VALUE))
+                .thenComparing(mapping -> mapping.getMapEdge().getId()));
+
         Map<MapEdge, Long> overlapByEdge = new LinkedHashMap<>();
-        for (MapEdgeGridCell mapping : mapEdgeGridCellRepository.findAllByGridCell_IdIn(gridCellIds)) {
+        for (MapEdgeGridCell mapping : mappings) {
             overlapByEdge.merge(mapping.getMapEdge(), 1L, Long::sum);
         }
-        return overlapByEdge.entrySet().stream()
-                .max(Comparator.comparingLong(Map.Entry::getValue))
-                .map(Map.Entry::getKey)
+        MapEdge representative = null;
+        long maxOverlap = 0;
+        for (Map.Entry<MapEdge, Long> entry : overlapByEdge.entrySet()) {
+            if (entry.getValue() > maxOverlap) {
+                representative = entry.getKey();
+                maxOverlap = entry.getValue();
+            }
+        }
+        return Optional.ofNullable(representative)
                 .map(edge -> edge.getFromNode().getName() + EDGE_SEPARATOR + edge.getToNode().getName());
     }
 }
