@@ -22,6 +22,7 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OrderColumn;
 import jakarta.persistence.Table;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import lombok.AccessLevel;
@@ -144,9 +145,12 @@ public class RouteRecalculation {
         this.triggerType = triggerType;
         this.congestionLevel = congestionLevel;
         this.density = density;
-        this.previousNodeIds = previousNodeIds;
+        // 호출부가 다른 행의 컬렉션(예: 승인된 행의 recalculatedNodeIds = 활성 경로)을 그대로 넘기면 두 엔티티가
+        // 같은 Hibernate 컬렉션을 공유해 커밋 시 "Found shared references to a collection"으로 저장이 실패한다.
+        // 승인 이력이 있는 세션의 재탐색이 전부 이렇게 조용히 사라졌으므로, 항상 새 리스트로 복사해 둔다.
+        this.previousNodeIds = new ArrayList<>(previousNodeIds);
         this.previousTotalWeight = previousTotalWeight;
-        this.recalculatedNodeIds = recalculatedNodeIds;
+        this.recalculatedNodeIds = new ArrayList<>(recalculatedNodeIds);
         this.totalWeight = totalWeight;
         this.status = RecalculationStatus.PENDING;
     }

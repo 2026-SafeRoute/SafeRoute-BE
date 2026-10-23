@@ -78,7 +78,7 @@ class FireSpreadStepServiceRealRecalculationIntegrationTest {
 
     @Test
     void fireTriggeredRecalculation_commitsIndependentlyAfterFireSpreadTransaction() {
-        UUID sessionId = transactionTemplate.execute(status -> createRunningSessionWithDetourableFire());
+        UUID sessionId = transactionTemplate.execute(status -> createRunningSessionWithDetourableFire("fire-recalc"));
 
         fireSpreadStepService.spreadOneStep(sessionId);
 
@@ -120,7 +120,58 @@ class FireSpreadStepServiceRealRecalculationIntegrationTest {
         assertThat(session.getRouteBlockedAt()).isNotNull();
     }
 
-    private UUID createRunningSessionWithDetourableFire() {
+    // 승인된 경로(예: 혼잡 우회)가 있으면 그 경로가 새 PENDING의 previousNodeIds가 된다. 승인된 행의 컬렉션을
+    // 그대로 넘기면 커밋 시 "Found shared references to a collection"으로 저장이 실패해, 운영에서 승인 이후
+    // 화재가 활성 경로에 닿아도 우회 요청이 한 번도 뜨지 않았다. 실제 DB 커밋으로만 재현되므로 여기서 검증한다.
+    @Test
+    void approvedRouteCrossedByFire_commitsFireSpreadPending() {
+        UUID sessionId = transactionTemplate.execute(status -> createRunningSessionWithApprovedRouteIntoFire());
+
+        fireSpreadStepService.spreadOneStep(sessionId);
+
+        List<RouteRecalculation> recalculations =
+                routeRecalculationRepository.findAllByTrainingSession_IdOrderByRequestedAtDesc(sessionId);
+        assertThat(recalculations).hasSize(2);
+
+        RouteRecalculation firePending = recalculations.stream()
+                .filter(r -> r.getStatus() == RecalculationStatus.PENDING)
+                .findFirst().orElseThrow();
+        assertThat(firePending.getTriggerType()).isEqualTo(RecalculationTriggerType.FIRE_SPREAD);
+        RouteRecalculation approved = recalculations.stream()
+                .filter(r -> r.getStatus() == RecalculationStatus.APPROVED)
+                .findFirst().orElseThrow();
+        List<UUID> firePrevious = transactionTemplate.execute(status -> List.copyOf(
+                routeRecalculationRepository.findById(firePending.getId()).orElseThrow().getPreviousNodeIds()));
+        List<UUID> approvedPath = transactionTemplate.execute(status -> List.copyOf(
+                routeRecalculationRepository.findById(approved.getId()).orElseThrow().getRecalculatedNodeIds()));
+        assertThat(firePrevious).isEqualTo(approvedPath);
+    }
+
+    private UUID createRunningSessionWithApprovedRouteIntoFire() {
+        UUID sessionId = createRunningSessionWithDetourableFire("fire-approved");
+        TrainingSession session = trainingSessionRepository.findById(sessionId).orElseThrow();
+        // createRunningSessionWithDetourableFire의 무관한 PENDING을 지우고, 화재 엣지(START -> EXIT_A)를 지나는
+        // 경로를 승인된 활성 경로로 둔다.
+        routeRecalculationRepository.deleteAll(
+                routeRecalculationRepository.findAllByTrainingSession_IdOrderByRequestedAtDesc(sessionId));
+        MapNode start = session.getScenario().getStartNode();
+        MapNode exitA = mapNodeRepository.findAll().stream()
+                .filter(node -> node.getFloor().getId().equals(start.getFloor().getId()))
+                .filter(node -> "EXIT_A".equals(node.getCode()))
+                .findFirst().orElseThrow();
+        MapEdge edgeToA = mapEdgeRepository.findAll().stream()
+                .filter(edge -> edge.getToNode().getId().equals(exitA.getId()))
+                .findFirst().orElseThrow();
+        RouteRecalculation approved = RouteRecalculation.createPending(
+                session, edgeToA, "CCTV_APPROVED", RecalculationTriggerType.STARTED,
+                com.saferoute.domain.congestion.entity.CongestionLevel.CROWDED, 3.5,
+                List.of(start.getId(), UUID.randomUUID()), 10.0, List.of(start.getId(), exitA.getId()), 12.5);
+        approved.approve(Instant.now(), session.getAdmin());
+        routeRecalculationRepository.save(approved);
+        return sessionId;
+    }
+
+    private UUID createRunningSessionWithDetourableFire(String userKey) {
         Building building = buildingRepository.save(Building.create(
                 "화재 재탐색 테스트 건물", "부산광역시 해운대구 우동 123-45", BuildingType.CLASSROOM, SCHOOL_NAME));
         Floor floor = Floor.create(building, 1);
@@ -147,7 +198,7 @@ class FireSpreadStepServiceRealRecalculationIntegrationTest {
         mapEdgeGridCellRepository.save(MapEdgeGridCell.create(edgeToA, firedCell));
 
         User admin = userRepository.save(User.create(
-                "fire-recalc-admin", "password", "fire-recalc@saferoute.com", UserRole.MANAGER, SCHOOL_NAME));
+                userKey + "-admin", "password", userKey + "@saferoute.com", UserRole.MANAGER, SCHOOL_NAME));
 
         TrainingScenario scenario = trainingScenarioRepository.save(TrainingScenario.create(
                 "화재 재탐색 테스트 시나리오", 10, Instant.now(), false, FireSpreadSpeed.FAST, building, admin, start));
