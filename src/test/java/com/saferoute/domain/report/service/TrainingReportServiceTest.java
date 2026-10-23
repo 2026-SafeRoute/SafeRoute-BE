@@ -67,6 +67,9 @@ class TrainingReportServiceTest {
     @Mock
     private RouteRecalculationRepository routeRecalculationRepository;
 
+    @Mock
+    private BottleneckLocationResolver bottleneckLocationResolver;
+
     private final UUID sessionId = UUID.randomUUID();
     private final UUID buildingId = UUID.randomUUID();
 
@@ -264,6 +267,61 @@ class TrainingReportServiceTest {
         verify(congestionEventRepository).countBottlenecksBySessionId(sessionId.toString());
         verify(congestionEventRepository, never())
                 .findAllBySessionId(any(), org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    @Test
+    @DisplayName("병목 위치를 찾으면 병목 권고 설명에 CCTV와 구간을 적는다")
+    void generate_bottleneckLocationResolved_includesLocationInRecommendation() {
+        TrainingSession session = sessionWithBottlenecks(7);
+        given(session.getId()).willReturn(sessionId);
+        given(bottleneckLocationResolver.resolve(sessionId, buildingId))
+                .willReturn(Optional.of("CCTV_122(복도 4 – 복도 5 구간)"));
+
+        ReportResponse response = trainingReportService.generate(sessionId, new GenerateReportRequest(50, 50), EMAIL);
+
+        assertThat(response.getRecommendations())
+                .anySatisfy(recommendation -> assertThat(recommendation.description())
+                        .isEqualTo("CCTV_122(복도 4 – 복도 5 구간)에서 병목(혼잡) 7회 감지"));
+        assertThat(response.getSummaryText()).contains("훈련 중 CCTV_122(복도 4 – 복도 5 구간)에서 병목이 7회 감지");
+    }
+
+    @Test
+    @DisplayName("병목 위치 조회가 실패해도 리포트는 기존 문구로 정상 생성된다")
+    void generate_bottleneckLocationLookupFails_stillSavesReportWithDefaultText() {
+        TrainingSession session = sessionWithBottlenecks(7);
+        given(session.getId()).willReturn(sessionId);
+        given(bottleneckLocationResolver.resolve(sessionId, buildingId))
+                .willThrow(new IllegalStateException("DynamoDB 장애"));
+
+        ReportResponse response = trainingReportService.generate(sessionId, new GenerateReportRequest(50, 50), EMAIL);
+
+        assertThat(response.getRecommendations())
+                .anySatisfy(recommendation -> assertThat(recommendation.description())
+                        .isEqualTo("훈련 중 병목(혼잡) 7회 감지"));
+        verify(trainingReportRepository).saveAndFlush(any());
+    }
+
+    @Test
+    @DisplayName("병목이 없으면 병목 위치를 조회하지 않는다")
+    void generate_noBottleneck_doesNotResolveLocation() {
+        sessionWithBottlenecks(0);
+
+        trainingReportService.generate(sessionId, new GenerateReportRequest(50, 50), EMAIL);
+
+        verify(bottleneckLocationResolver, never()).resolve(any(), any());
+    }
+
+    private TrainingSession sessionWithBottlenecks(int bottleneckCount) {
+        Instant startedAt = Instant.parse("2026-01-01T00:00:00Z");
+        TrainingSession session = endedSession(300, startedAt, startedAt.plusSeconds(300));
+        given(trainingSessionRepository.findByIdAndScenario_Building_SchoolName(sessionId, SCHOOL_NAME))
+                .willReturn(Optional.of(session));
+        given(congestionEventRepository.countBottlenecksBySessionId(sessionId.toString()))
+                .willReturn(bottleneckCount);
+        given(routeDeviationService.calculateForSession(sessionId, EMAIL))
+                .willReturn(new SessionDeviationResult(10, 0, 0.0));
+        given(trainingReportRepository.saveAndFlush(any())).willAnswer(invocation -> invocation.getArgument(0));
+        return session;
     }
 
     @Test
