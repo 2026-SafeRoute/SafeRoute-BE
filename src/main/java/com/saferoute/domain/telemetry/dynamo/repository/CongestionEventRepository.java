@@ -6,7 +6,10 @@ import com.saferoute.domain.telemetry.dynamo.entity.CongestionEventType;
 import com.saferoute.domain.telemetry.dynamo.entity.EventProcessingStatus;
 import com.saferoute.domain.telemetry.dynamo.entity.ImageUploadStatus;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Repository;
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbEnhancedClient;
@@ -129,6 +132,23 @@ public class CongestionEventRepository {
         return (int) gsi1.query(request).stream()
                 .flatMap(page -> page.items().stream())
                 .count();
+    }
+
+    // countBottlenecksBySessionId와 같은 기준의 병목을 CCTV 코드별로 센다(리포트에 병목 위치를 적기 위함).
+    // cctvCode가 비어 있는 이벤트는 위치를 특정할 수 없으므로 집계에서 뺀다.
+    public Map<String, Long> countBottlenecksByCctvCode(String trainingSessionId) {
+        QueryEnhancedRequest request = QueryEnhancedRequest.builder()
+                .queryConditional(QueryConditional.keyEqualTo(Key.builder()
+                        .partitionValue(CongestionEventItem.buildGsi1Pk(trainingSessionId))
+                        .build()))
+                .filterExpression(BOTTLENECK_FILTER)
+                .build();
+
+        return gsi1.query(request).stream()
+                .flatMap(page -> page.items().stream())
+                .map(CongestionEventItem::getCctvCode)
+                .filter(code -> code != null && !code.isBlank())
+                .collect(Collectors.groupingBy(Function.identity(), Collectors.counting()));
     }
 
     // 이벤트 타임라인 조회 전용: 최신순으로 커서 페이지네이션하며, cctvCode 필터를 DynamoDB

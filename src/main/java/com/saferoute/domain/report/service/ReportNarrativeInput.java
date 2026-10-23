@@ -20,6 +20,23 @@ public record ReportNarrativeInput(
         int deviationScore,
         double overallScore,
         Grade grade,
-        List<ZoneDensityPoint> zoneDensities
+        List<ZoneDensityPoint> zoneDensities,
+        // 병목 위치 문구(예: "CCTV_122(복도 4 – 복도 5 구간)"). 위치를 특정하지 못하면 null.
+        String bottleneckLocation
 ) {
+
+    public ReportNarrativeInput(
+            String scenarioName, int participantCount, int survivorCount, BigDecimal survivalRate,
+            int evacuationSec, int targetEvacuationSec, int evacuationScore,
+            int bottleneckCount, int bottleneckScore,
+            double deviationRate, int deviationScore,
+            double overallScore, Grade grade,
+            List<ZoneDensityPoint> zoneDensities) {
+        this(scenarioName, participantCount, survivorCount, survivalRate,
+                evacuationSec, targetEvacuationSec, evacuationScore,
+                bottleneckCount, bottleneckScore,
+                deviationRate, deviationScore,
+                overallScore, grade,
+                zoneDensities, null);
+    }
 }

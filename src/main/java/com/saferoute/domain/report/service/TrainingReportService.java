@@ -26,11 +26,13 @@ import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class TrainingReportService {
@@ -43,6 +45,7 @@ public class TrainingReportService {
   private final TrainingReportPdfGenerator trainingReportPdfGenerator;
   private final SchoolContextService schoolContextService;
   private final RouteRecalculationRepository routeRecalculationRepository;
+  private final BottleneckLocationResolver bottleneckLocationResolver;
 
   // 훈련 종료 후 관리자가 참여/생존 인원만 입력하면, 나머지 3개 항목(대피시간/병목/경로준수율)은
   // 이미 갖고 있는 데이터로 직접 계산해 리포트를 생성한다.
@@ -99,7 +102,8 @@ public class TrainingReportService {
         bottleneckCount, bottleneckScore,
         deviation.deviationRate(), deviationScore,
         overallScore, grade,
-        zoneDensities);
+        zoneDensities,
+        resolveBottleneckLocation(session, bottleneckCount));
     // 점수 기반 문장 뒤에 실제 경로 재탐색 결과를 덧붙인다 (#289). 경로 권고는 점수와 무관하게 맨 앞에 온다.
     List<RouteRecalculation> recalculations =
         routeRecalculationRepository.findAllByTrainingSession_IdOrderByRequestedAtDesc(sessionId);
@@ -123,6 +127,22 @@ public class TrainingReportService {
       return ReportResponse.from(trainingReportRepository.saveAndFlush(report));
     } catch (DataIntegrityViolationException e) {
       throw new ApiException(ReportErrorCode.REPORT_ALREADY_EXISTS);
+    }
+  }
+
+  // 병목 위치는 권고 문구를 구체적으로 만드는 부가 정보일 뿐이다. 조회가 어떤 이유로든 실패하면
+  // (DynamoDB 장애, 삭제된 CCTV, 바뀐 도면 등) 위치 없이 기존 문구로 리포트를 만든다 - 이 때문에
+  // 리포트 생성 자체가 실패하면 안 된다. resolver는 REQUIRES_NEW라 실패해도 이 트랜잭션은 멀쩡하다.
+  private String resolveBottleneckLocation(TrainingSession session, int bottleneckCount) {
+    if (bottleneckCount == 0) {
+      return null;
+    }
+    try {
+      return bottleneckLocationResolver.resolve(session.getId(), session.getScenario().getBuildingId())
+          .orElse(null);
+    } catch (RuntimeException exception) {
+      log.warn("병목 위치를 찾지 못해 위치 없이 리포트 권고를 생성: sessionId={}", session.getId(), exception);
+      return null;
     }
   }
 
