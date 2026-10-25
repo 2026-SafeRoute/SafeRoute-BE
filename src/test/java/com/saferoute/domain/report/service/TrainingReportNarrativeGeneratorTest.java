@@ -97,6 +97,26 @@ class TrainingReportNarrativeGeneratorTest {
     }
 
     @Test
+    @DisplayName("병목이 여러 CCTV에서 났으면 CCTV별 구간과 횟수를 전부 적는다")
+    void lowBottleneckScoreWithMultipleLocations_listsAll() {
+        ReportNarrativeInput input = new ReportNarrativeInput(
+                "정기 훈련", 50, 50, BigDecimal.valueOf(100.0),
+                200, 300, 100,
+                4, 40,
+                0.0, 100,
+                80.0, Grade.B,
+                List.of(),
+                "CCTV_122(복도 3 – 복도 4 구간, 3회), CCTV_130(1회)");
+
+        List<RecommendationPoint> recommendations = TrainingReportNarrativeGenerator.buildRecommendations(input);
+
+        assertThat(recommendations.get(0).getDescription())
+                .isEqualTo("CCTV_122(복도 3 – 복도 4 구간, 3회), CCTV_130(1회)에서 병목(혼잡) 4회 감지");
+        assertThat(TrainingReportNarrativeGenerator.buildSummary(input))
+                .contains("훈련 중 CCTV_122(복도 3 – 복도 4 구간, 3회), CCTV_130(1회)에서 병목이 4회 감지되어");
+    }
+
+    @Test
     @DisplayName("병목 점수가 낮은데 임계치를 넘는 구역이 없으면 일반적인 문구로 대체한다")
     void lowBottleneckScoreWithoutCrowdedZone_usesGenericWording() {
         ReportNarrativeInput input = new ReportNarrativeInput(
@@ -143,7 +163,7 @@ class TrainingReportNarrativeGeneratorTest {
     @Test
     @DisplayName("권고사항이 4개 나오는 상황이면 우선순위가 높은 3개만 남고 LOW 하나는 잘린다")
     void multipleFindings_sortedByPriorityAndCappedAtThree() {
-        // 대피시간(0점=HIGH), 생존률(40=HIGH), 병목(60점=MEDIUM), 경로준수율(80점=LOW) - 4개 모두 기준 미달
+        // 대피시간(0점=HIGH), 대피 성공률(40=HIGH), 병목(60점=MEDIUM), 경로준수율(80점=LOW) - 4개 모두 기준 미달
         ReportNarrativeInput input = new ReportNarrativeInput(
                 "정기 훈련", 50, 20, BigDecimal.valueOf(40.0),
                 600, 300, 0,

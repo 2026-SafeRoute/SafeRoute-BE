@@ -44,7 +44,7 @@ public class TrainingReport {
     @Column(name = "grade", length = 20)
     private Grade grade;
 
-    // 4개 항목 점수를 가중합(대피시간 35%/생존률 30%/병목 20%/경로준수율 15%)한 최종 점수 (0~100).
+    // 4개 항목 점수를 가중합(대피시간 35%/대피 성공률 30%/병목 20%/경로준수율 15%)한 최종 점수 (0~100).
     @Column(name = "overall_score", nullable = false)
     private Double overallScore;
 
@@ -60,11 +60,11 @@ public class TrainingReport {
     @Column(name="participant_count", nullable = false)
     private Integer participantCount;
 
-    // 훈련 종료 후 관리자가 수동으로 판정해 입력하는 생존 인원 수.
+    // 훈련 종료 후 관리자가 수동으로 판정해 입력하는 대피 성공 인원 수.
     @Column(name = "survivor_count", nullable = false)
     private Integer survivorCount;
 
-    // survivorCount / participantCount * 100. 그 자체가 생존률 항목 점수다.
+    // survivorCount / participantCount * 100. 그 자체가 대피 성공률 항목 점수다.
     @Column(name = "survival_rate", nullable = false)
     private BigDecimal survivalRate;
 
@@ -163,7 +163,7 @@ public class TrainingReport {
         this.routeBlockedAfterSec = trainingSession.routeBlockedAfterSec();
     }
 
-    // 4개 항목(대피시간/생존률/병목/경로준수율)을 이미 갖고 있는 데이터로부터 계산한 결과로 리포트를 생성한다.
+    // 4개 항목(대피시간/대피 성공률/병목/경로준수율)을 이미 갖고 있는 데이터로부터 계산한 결과로 리포트를 생성한다.
     // riskIndex/pdfUrl은 아직 계산·생성 로직이 없어 null로 시작한다.
     public static TrainingReport create(Grade grade, Double overallScore,
                                         Integer avgEvacuationSec, Integer evacuationScore,

@@ -54,7 +54,7 @@ public final class TrainingReportNarrativeGenerator {
                 .toList();
     }
 
-    // 4개 지표(가중치 순: 대피시간 35%/생존률 30%/병목 20%/경로준수율 15%)를 훑어
+    // 4개 지표(가중치 순: 대피시간 35%/대피 성공률 30%/병목 20%/경로준수율 15%)를 훑어
     // 기준 미달인 것만 모음
     private static List<Finding> buildFindings(ReportNarrativeInput input) {
         List<Finding> findings = new ArrayList<>();
@@ -75,9 +75,9 @@ public final class TrainingReportNarrativeGenerator {
             findings.add(new Finding(
                     priorityFor(input.survivalRate().doubleValue()),
                     "안전 교육 보강 필요",
-                    String.format("생존 판정 %d/%d명 (%.1f%%)",
+                    String.format("대피 성공 %d/%d명 (%.1f%%)",
                             input.survivorCount(), input.participantCount(), input.survivalRate()),
-                    String.format("생존률이 %.1f%%로 안전 교육 보강이 필요합니다.", input.survivalRate()),
+                    String.format("대피 성공률이 %.1f%%로 안전 교육 보강이 필요합니다.", input.survivalRate()),
                     input.survivalRate().doubleValue()
             ));
         }
@@ -139,7 +139,7 @@ public final class TrainingReportNarrativeGenerator {
                     formatDuration(input.evacuationSec())));
         }
         if (input.survivalRate().doubleValue() >= GOOD_SCORE_THRESHOLD) {
-            sentences.add(String.format("생존률 %.1f%%로 높은 안전성을 확인했습니다.", input.survivalRate()));
+            sentences.add(String.format("대피 성공률 %.1f%%로 높은 안전성을 확인했습니다.", input.survivalRate()));
         }
         if (input.bottleneckCount() == 0) {
             sentences.add("구역별 병목 없이 원활한 대피가 진행되었습니다.");

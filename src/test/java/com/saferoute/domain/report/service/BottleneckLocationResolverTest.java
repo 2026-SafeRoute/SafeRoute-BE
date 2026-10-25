@@ -89,23 +89,33 @@ class BottleneckLocationResolverTest {
     }
 
     @Test
-    @DisplayName("병목이 여러 CCTV에서 났으면 가장 많은 CCTV를 적고 나머지는 '외 N곳'으로 줄인다")
-    void resolve_multipleCctvs_picksMostFrequentAndSummarizesRest() {
+    @DisplayName("병목이 여러 CCTV에서 났으면 감지 횟수 순으로 CCTV별 구간과 횟수를 전부 적는다")
+    void resolve_multipleCctvs_listsAllWithCounts() {
         given(congestionEventRepository.countBottlenecksByCctvCode(sessionId.toString()))
                 .willReturn(Map.of("CCTV_001", 1L, "CCTV_122", 3L, "CCTV_200", 1L));
-        given(cctvJpaRepository.findByCode("CCTV_122")).willReturn(Optional.empty());
+        Cctv cctv = cctvInBuilding(buildingId);
+        given(cctvJpaRepository.findByCode("CCTV_122")).willReturn(Optional.of(cctv));
+        FloorGridCell cell = gridCell();
+        givenMonitoredCells(cctv, cell);
+        MapEdgeGridCell edgeMapping = mapping(edge("복도 4", "복도 5"), cell);
+        given(mapEdgeGridCellRepository.findAllByGridCell_IdIn(List.of(cell.getId())))
+                .willReturn(List.of(edgeMapping));
+        given(cctvJpaRepository.findByCode("CCTV_001")).willReturn(Optional.empty());
+        given(cctvJpaRepository.findByCode("CCTV_200")).willReturn(Optional.empty());
 
-        assertThat(resolver.resolve(sessionId, buildingId)).contains("CCTV_122 외 2곳");
+        assertThat(resolver.resolve(sessionId, buildingId))
+                .contains("CCTV_122(복도 4 – 복도 5 구간, 3회), CCTV_001(1회), CCTV_200(1회)");
     }
 
     @Test
-    @DisplayName("횟수가 같으면 코드 순으로 골라 항상 같은 결과가 나온다")
-    void resolve_tie_picksSmallestCode() {
+    @DisplayName("횟수가 같으면 코드 순으로 적어 항상 같은 결과가 나온다")
+    void resolve_tie_ordersByCode() {
         given(congestionEventRepository.countBottlenecksByCctvCode(sessionId.toString()))
                 .willReturn(Map.of("CCTV_200", 2L, "CCTV_001", 2L));
         given(cctvJpaRepository.findByCode("CCTV_001")).willReturn(Optional.empty());
+        given(cctvJpaRepository.findByCode("CCTV_200")).willReturn(Optional.empty());
 
-        assertThat(resolver.resolve(sessionId, buildingId)).contains("CCTV_001 외 1곳");
+        assertThat(resolver.resolve(sessionId, buildingId)).contains("CCTV_001(2회), CCTV_200(2회)");
     }
 
     @Test
