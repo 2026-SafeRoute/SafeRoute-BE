@@ -5,7 +5,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 
 // 훈련 리포트의 4개 평가 항목 점수와 최종 등급을 계산하는 순수 계산기.
-// 가중치(대피시간 35% / 생존률 30% / 병목 20% / 경로준수율 15%)는 화재예방법 제37조,
+// 가중치(대피시간 35% / 대피 성공률 30% / 병목 20% / 경로준수율 15%)는 화재예방법 제37조,
 // 소방시설법 제16조 등 법적 근거표에서 도출한 값이다.
 public final class TrainingReportScoreCalculator {
 
@@ -34,7 +34,7 @@ public final class TrainingReportScoreCalculator {
         return clamp(Math.round(score));
     }
 
-    // 생존 판정 인원 / 전체 참여 인원 * 100. 그 자체가 0~100 점수다.
+    // 대피 성공 인원 / 전체 참여 인원 * 100. 그 자체가 0~100 점수다.
     public static BigDecimal survivalRate(int survivorCount, int participantCount) {
         if (participantCount <= 0) {
             return BigDecimal.ZERO;

@@ -35,7 +35,7 @@ class TrainingReportScoreCalculatorTest {
     // === survivalRate ===
 
     @Test
-    @DisplayName("생존 판정 인원을 전체 참여 인원으로 나눈 백분율이다")
+    @DisplayName("대피 성공 인원을 전체 참여 인원으로 나눈 백분율이다")
     void survivalRate_computesPercentage() {
         assertThat(TrainingReportScoreCalculator.survivalRate(48, 50))
                 .isEqualByComparingTo(BigDecimal.valueOf(96.0));

@@ -20,8 +20,9 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
-// 리포트 개선 권고에 적을 병목 위치 문구를 만든다. 예: "CCTV_122(복도 4 – 복도 5 구간) 외 1곳".
-// 병목이 가장 많이 감지된 CCTV 하나를 대표로 고르고, 그 CCTV가 감시하는 엣지 중 감시 셀과 가장 많이
+// 리포트 개선 권고에 적을 병목 위치 문구를 만든다.
+// 예: "CCTV_122(복도 4 – 복도 5 구간)", 여러 곳이면 "CCTV_122(복도 4 – 복도 5 구간, 3회), CCTV_130(1회)".
+// 병목이 감지된 CCTV를 감지 횟수 순으로 전부 적고, 각 CCTV가 감시하는 엣지 중 감시 셀과 가장 많이
 // 겹치는 엣지를 대표 구간으로 쓴다. CCTV가 삭제됐거나 도면이 바뀌어 구간을 못 찾으면 코드만 쓴다.
 // 리포트 생성(TrainingReportService.generate) 트랜잭션과 분리된 REQUIRES_NEW로 실행한다 - 여기서 조회
 // 예외가 나도 리포트 트랜잭션이 rollback-only로 오염되지 않아야 호출부가 예외를 삼키고 기존 문구로
@@ -44,25 +45,35 @@ public class BottleneckLocationResolver {
             return Optional.empty();
         }
 
-        // 횟수가 같으면 코드 순으로 골라, 같은 데이터면 항상 같은 CCTV가 나오게 한다.
-        String topCctvCode = countsByCctvCode.entrySet().stream()
+        // 횟수가 같으면 코드 순으로 정렬해, 같은 데이터면 항상 같은 순서로 나오게 한다.
+        List<Map.Entry<String, Long>> sortedCounts = countsByCctvCode.entrySet().stream()
                 .sorted(Map.Entry.<String, Long>comparingByValue().reversed()
                         .thenComparing(Map.Entry.comparingByKey()))
-                .map(Map.Entry::getKey)
-                .findFirst()
-                .orElseThrow();
+                .toList();
 
-        String location = cctvJpaRepository.findByCode(topCctvCode)
-                .filter(cctv -> buildingId.equals(cctv.getCustomNode().getFloor().getBuilding().getId()))
-                .flatMap(this::representativeEdgeName)
-                .map(edgeName -> topCctvCode + "(" + edgeName + " 구간)")
-                .orElse(topCctvCode);
-
-        int otherCctvCount = countsByCctvCode.size() - 1;
-        if (otherCctvCount > 0) {
-            location += " 외 " + otherCctvCount + "곳";
+        // CCTV가 하나면 전체 횟수와 같으므로 CCTV별 횟수를 따로 적지 않는다.
+        if (sortedCounts.size() == 1) {
+            String code = sortedCounts.get(0).getKey();
+            return Optional.of(edgeNameOf(code, buildingId)
+                    .map(edgeName -> code + "(" + edgeName + " 구간)")
+                    .orElse(code));
         }
-        return Optional.of(location);
+
+        List<String> locations = new ArrayList<>();
+        for (Map.Entry<String, Long> entry : sortedCounts) {
+            String code = entry.getKey();
+            String countText = entry.getValue() + "회";
+            locations.add(edgeNameOf(code, buildingId)
+                    .map(edgeName -> code + "(" + edgeName + " 구간, " + countText + ")")
+                    .orElse(code + "(" + countText + ")"));
+        }
+        return Optional.of(String.join(", ", locations));
+    }
+
+    private Optional<String> edgeNameOf(String cctvCode, UUID buildingId) {
+        return cctvJpaRepository.findByCode(cctvCode)
+                .filter(cctv -> buildingId.equals(cctv.getCustomNode().getFloor().getBuilding().getId()))
+                .flatMap(this::representativeEdgeName);
     }
 
     private Optional<String> representativeEdgeName(Cctv cctv) {

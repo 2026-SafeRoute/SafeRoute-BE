@@ -80,7 +80,7 @@ class TrainingReportServiceTest {
                 .thenReturn(SCHOOL_NAME);
     }
 
-    // 가드(종료 여부/중복/생존인원 검증)를 통과한 뒤에야 scenario.getTargetEvacuationSec()/
+    // 가드(종료 여부/중복/대피 성공 인원 검증)를 통과한 뒤에야 scenario.getTargetEvacuationSec()/
     // startedAt에 접근하므로, 가드에서 예외가 나는 테스트는 그 스텁을 쓰지 않는다 - lenient로 풀어준다.
     private TrainingSession endedSession(int targetEvacuationSec, Instant startedAt, Instant endedAt) {
         TrainingScenario scenario = mock(TrainingScenario.class);
@@ -156,7 +156,7 @@ class TrainingReportServiceTest {
     }
 
     @Test
-    @DisplayName("종료된 세션이면 참여/생존 인원 입력만으로 나머지 항목을 계산해 리포트를 생성한다")
+    @DisplayName("종료된 세션이면 참여/대피 성공 인원 입력만으로 나머지 항목을 계산해 리포트를 생성한다")
     void generate_endedSession_computesRemainingScoresAndSaves() {
         Instant startedAt = Instant.parse("2026-01-01T00:00:00Z");
         Instant endedAt = startedAt.plusSeconds(300);
@@ -369,7 +369,7 @@ class TrainingReportServiceTest {
     }
 
     @Test
-    @DisplayName("생존 판정 인원이 전체 참여 인원보다 많으면 예외가 발생한다")
+    @DisplayName("대피 성공 인원이 전체 참여 인원보다 많으면 예외가 발생한다")
     void generate_survivorExceedsParticipants_throwsException() {
         TrainingSession session = endedSession(300, Instant.now(), Instant.now().plusSeconds(300));
         given(trainingSessionRepository.findByIdAndScenario_Building_SchoolName(sessionId, SCHOOL_NAME))

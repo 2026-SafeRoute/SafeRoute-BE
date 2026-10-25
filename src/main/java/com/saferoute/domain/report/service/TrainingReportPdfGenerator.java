@@ -92,7 +92,7 @@ public class TrainingReportPdfGenerator {
         addHeaderCell(table, "", smallFont);
 
         addScoreRow(table, smallFont, "대피 시간 (35%)", report.getEvacuationScore());
-        addScoreRow(table, smallFont, "생존률 (30%)", report.getSurvivalRate().intValue());
+        addScoreRow(table, smallFont, "대피 성공률 (30%)", report.getSurvivalRate().intValue());
         addScoreRow(table, smallFont, "병목 회피 (20%)", report.getBottleneckScore());
         addScoreRow(table, smallFont, "경로 준수율 (15%)", report.getDeviationScore());
 
@@ -189,7 +189,7 @@ public class TrainingReportPdfGenerator {
         table.setSpacingBefore(6f);
 
         addDataRow(table, smallFont, "대피 소요 시간", formatDuration(report.getAvgEvacuationSec()));
-        addDataRow(table, smallFont, "참여 인원 / 생존 판정 인원",
+        addDataRow(table, smallFont, "참여 인원 / 대피 성공 인원",
                 report.getParticipantCount() + "명 / " + report.getSurvivorCount() + "명");
         addDataRow(table, smallFont, "병목(혼잡) 발생 횟수", report.getBottleneckCount() + "회");
         addDataRow(table, smallFont, "경로 이탈률",

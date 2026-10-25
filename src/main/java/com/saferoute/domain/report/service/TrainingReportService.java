@@ -47,7 +47,7 @@ public class TrainingReportService {
   private final RouteRecalculationRepository routeRecalculationRepository;
   private final BottleneckLocationResolver bottleneckLocationResolver;
 
-  // 훈련 종료 후 관리자가 참여/생존 인원만 입력하면, 나머지 3개 항목(대피시간/병목/경로준수율)은
+  // 훈련 종료 후 관리자가 참여/대피 성공 인원만 입력하면, 나머지 3개 항목(대피시간/병목/경로준수율)은
   // 이미 갖고 있는 데이터로 직접 계산해 리포트를 생성한다.
   @Transactional
   public ReportResponse generate(UUID sessionId, GenerateReportRequest request, String email) {
