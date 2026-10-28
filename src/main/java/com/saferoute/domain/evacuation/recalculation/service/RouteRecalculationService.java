@@ -403,8 +403,19 @@ public class RouteRecalculationService {
             return;
         }
 
+        // 같은 후보가 이미 대기 중이면 그대로 둔다. 승인 전까지는 활성 경로가 그대로라 틱마다 같은
+        // 후보가 다시 계산되는데, 매번 취소+재생성하면 관리자 화면의 제안 카드가 틱마다 "만료"로 바뀌었다가
+        // 새로 뜨기를 반복해 승인할 틈이 없다.
+        boolean sameCandidateAlreadyPending = false;
         for (RouteRecalculation pending : stillSafePending) {
-            cancel(pending, "화재 확산으로 무효화됨");
+            if (pending.getRecalculatedNodeIds().equals(candidateNodeIds)) {
+                sameCandidateAlreadyPending = true;
+            } else {
+                cancel(pending, "화재 확산으로 무효화됨");
+            }
+        }
+        if (sameCandidateAlreadyPending) {
+            return;
         }
 
         RouteRecalculation recalculation = save(RouteRecalculation.createPendingForFireSpread(
@@ -716,26 +727,20 @@ public class RouteRecalculationService {
         }
 
         try {
-            // [의도적 설계 결정 - 이슈 #247] 여기서 화재를 제외하면 안 된다: triggerForFireSpread()의
-            // candidate도 같은 시나리오+층 기준으로 "현재 화재 구간"을 제외해 계산하므로, 승인된
-            // 경로가 아직 없는 상태에서 previous에도 똑같이 화재를 제외해버리면 두 값이 항상
-            // 같아져서 candidateNodeIds.equals(previous.nodeIds())가 영원히 true가 된다 - 즉 승인된
-            // 경로가 없는 세션에서는 화재가 아무리 번져도 다시는 PENDING이 안 생기게 된다(직접
-            // 재현해서 확인함, TrainingSessionServiceRealRecalculationIntegrationTest류 참고).
+            // 승인 이력이 없으면 "훈련 시작 때 유도등에 반영된 최초 경로"가 활성 경로다 - 시작 시점
+            // (TrainingSessionService.start())과 똑같이 최초 발화점 구간만 빼고 계산한다.
             //
-            // 이 부정확함(previous가 화재를 모름)은 의도적으로 남겨뒀다: 실패 방향이 안전 쪽이다.
-            // "불필요한 PENDING이 한 번 더 뜬다"가 "떠야 할 PENDING이 안 뜬다"보다 훨씬 싸다
-            // (화재 확산이 반복되면 기존 PENDING을 취소하고 새 PENDING을 다시 만들 수 있음). 근본 해결(훈련 시작 시 초기
-            // 경로를 시스템 자동 승인 APPROVED 레코드로 남겨서 이 폴백 자체를 거의 안 타게 만드는
-            // 것)은 triggerEdge nullable화 + DB 수동 마이그레이션 + 재탐색 이력 노출 여부 결정이
-            // 필요해 비용이 더 크다고 판단해 보류했다.
+            // 예전에는 화재를 전혀 빼지 않은 직행 경로를 썼는데(이슈 #247), 그러면 관리자 화면·유도등이
+            // 보여주는 경로(발화점을 피한 경로)와 여기서 "불이 닿았는지" 비교하는 경로가 달라져서, 불이
+            // 화면의 탈출 경로에 닿아도 직행 경로에는 안 닿으면 경로 변경 제안이 뜨지 않았다. 반대로
+            // 직행 경로가 발화점을 지나면 불이 경로와 상관없는 곳으로 번져도 매 틱 제안이 다시 생겼다.
             //
-            // 재검토 조건: (1) 관리자가 "현재 경로와 동일한 PENDING"을 노이즈로 느낀다는 피드백이
-            // 쌓이면, (2) 혼잡도·위험도 가중치(α, β) 같은 걸 도입해 previous/candidate 비교 기준
-            // 자체가 바뀌는 시점에 함께 재평가한다. crossesAnyEdge를 활용한 가드 테스트가
-            // trigger_...NoApprovedHistoryPendingCreatedOnce 계열 테스트에 있으니, 여길 고칠 땐
-            // 그 테스트가 먼저 깨지는지 확인할 것.
-            EvacuationRoute direct = evacuationRouteService.findShortestRoute(floorId, startNodeId);
+            // 현재 화재 전체가 아니라 "최초 발화점"만 빼므로 #247의 문제(previous와 candidate가 항상
+            // 같아짐)는 생기지 않는다: triggerForFireSpread()는 이 경로가 불붙은 엣지를 지날 때만
+            // 후보를 계산하는데, 발화점 엣지는 이미 빠져 있으니 그 엣지는 새로 번진 구간이고, 후보는
+            // 그 구간을 제외하므로 반드시 다르다.
+            EvacuationRoute direct = evacuationRouteService.findShortestRoute(
+                    floorId, startNodeId, originEdgeIdsForFloor(session.getScenario().getId(), floorId));
             List<UUID> nodeIds = direct.path().stream().map(node -> node.getId()).toList();
             return new RouteSnapshot(nodeIds, direct.totalWeight());
         } catch (ApiException exception) {
@@ -835,12 +840,11 @@ public class RouteRecalculationService {
             throw new ApiException(TrainingErrorCode.START_NODE_NOT_CONFIGURED);
         }
         UUID floorId = representativeStart.getFloor().getId();
-        // 시작 전(SCHEDULED)에는 발화점 셀이 아직 isFired=false다(evacuation-setup은 isFired를 켜지 않고
-        // 훈련 시작 시점에 켠다). isFired 기준으로만 제외하면 시작 전 화면이 화재를 지나는 경로를 보여주므로,
-        // 시작 전에는 시나리오에 등록된 최초 발화점 구간을 기준으로 제외한다.
-        Set<UUID> excludedEdgeIds = session.getStatus() == TrainingStatus.SCHEDULED
-                ? originEdgeIdsForFloor(scenario.getId(), floorId)
-                : firedEdgeIdsForFloor(scenario.getId(), floorId);
+        // 승인 이력이 없으면 훈련 시작 때 유도등에 반영된 최초 경로(최초 발화점 구간만 제외)를 보여준다.
+        // 진행 중 번진 화재까지 빼서 다시 계산하면 화면 경로가 불을 조용히 피해 가서, 실제로는 유도등이
+        // 불난 구간으로 안내하고 있어도 관리자가 알 수 없고 재탐색 판단 기준(resolveActiveRoute)과도
+        // 어긋난다. 불이 이 경로에 닿으면 재탐색 제안(PENDING)으로 우회 경로가 따로 제시된다.
+        Set<UUID> excludedEdgeIds = originEdgeIdsForFloor(scenario.getId(), floorId);
         EvacuationRoute directRoute =
                 evacuationRouteService.findShortestRoute(floorId, representativeStart.getId(), excludedEdgeIds);
         List<CurrentRouteResponse.NodePoint> path = directRoute.path().stream()
