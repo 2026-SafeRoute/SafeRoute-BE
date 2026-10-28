@@ -45,7 +45,22 @@ public record MonitoringCameraResponse(
                 example = "1787725695000",
                 nullable = true
         )
-        Long urlExpiresAt
+        Long urlExpiresAt,
+
+        @Schema(
+                description = "마지막 캡처를 서버가 받은 뒤 stateStaleAfterSec가 지났거나 캡처가 아직 없으면 true. "
+                        + "true면 thumbnailUrl을 라이브 화면이 아니라 '끊김/오래된 이미지'로 표시해야 한다",
+                example = "false"
+        )
+        boolean stale,
+
+        @Schema(
+                description = "최신 프레임 관측값을 서버가 받은 시각(Unix epoch milliseconds). capturedAt은 Pi 시계라 "
+                        + "지연 측정은 이 값을 기준으로 한다. 캡처가 없거나 예전 데이터면 null",
+                example = "1787722096200",
+                nullable = true
+        )
+        Long receivedAt
 ) {
 
     public static MonitoringCameraResponse withoutCapture(Cctv cctv) {
@@ -59,6 +74,8 @@ public record MonitoringCameraResponse(
                 location.displayName(),
                 null,
                 null,
+                null,
+                true,
                 null
         );
     }
@@ -66,7 +83,9 @@ public record MonitoringCameraResponse(
     public static MonitoringCameraResponse withCapture(
             Cctv cctv,
             long capturedAt,
-            PresignedGetUrl presignedGetUrl
+            Long receivedAt,
+            PresignedGetUrl presignedGetUrl,
+            boolean stale
     ) {
         Location location = Location.from(cctv);
         return new MonitoringCameraResponse(
@@ -78,7 +97,9 @@ public record MonitoringCameraResponse(
                 location.displayName(),
                 presignedGetUrl.viewUrl(),
                 capturedAt,
-                presignedGetUrl.expiresAt().toEpochMilli()
+                presignedGetUrl.expiresAt().toEpochMilli(),
+                stale,
+                receivedAt
         );
     }
 

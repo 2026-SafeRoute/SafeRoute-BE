@@ -46,6 +46,9 @@ public class ObservationItem {
     private Long processingStartedAt;
     private Long processingExpiresAt;
     private String processingOwner;
+    // BE가 이 관측값을 받은 서버 시각. capturedAt은 Pi 시계라 신선도/순서 판정에 그대로 쓰면 Pi 시계가
+    // 어긋났을 때 전부 틀어지므로, 서버 쪽 판정은 이 값을 기준으로 한다. 예전 데이터에는 없을 수 있다(null).
+    private Long receivedAt;
 
     public ObservationItem() {
     }
@@ -379,5 +382,19 @@ public class ObservationItem {
 
     public void setProcessingOwner(String processingOwner) {
         this.processingOwner = processingOwner;
+    }
+
+    public Long getReceivedAt() {
+        return receivedAt;
+    }
+
+    public void setReceivedAt(Long receivedAt) {
+        this.receivedAt = receivedAt;
+    }
+
+    // 서버 시각 기준 판정에 쓸 시각. receivedAt이 없는 예전 데이터는 capturedAt으로 대신한다.
+    // (get으로 시작하면 DynamoDB Enhanced Client가 속성으로 오인하므로 이름을 달리 둔다.)
+    public long effectiveReceivedAt() {
+        return receivedAt != null ? receivedAt : capturedAt;
     }
 }

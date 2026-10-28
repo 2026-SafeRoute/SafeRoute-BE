@@ -45,6 +45,7 @@ import com.saferoute.domain.training.repository.TrainingSessionRepository;
 import com.saferoute.domain.user.entity.User;
 import com.saferoute.domain.user.repository.UserRepository;
 import com.saferoute.domain.user.service.SchoolContextService;
+import com.saferoute.global.api.error.CongestionErrorCode;
 import com.saferoute.global.api.error.EvacuationErrorCode;
 import com.saferoute.global.api.error.TrainingErrorCode;
 import com.saferoute.global.api.exception.ApiException;
@@ -793,17 +794,21 @@ class RouteRecalculationServiceTest {
         verify(routeRecalculationRepository, never()).save(any());
     }
 
+    // ENDED는 Pi가 한 번만 보내는 신호라 조용히 건너뛰면 복구 제안이 영영 사라진다 - 기존 PENDING은 건드리지
+    // 않되 예외로 끝내서 CongestionEventService가 FAILED로 남기고 Pi 재전송이 다시 처리하게 한다.
     @Test
-    @DisplayName("ENDED 중 현재 혼잡 조회가 실패하면 기존 PENDING을 건드리지 않고 건너뛴다")
-    void trigger_ended_congestionLookupFails_keepsPendingAndSkips() {
+    @DisplayName("ENDED 중 현재 혼잡 조회가 실패하면 기존 PENDING을 건드리지 않고 예외로 끝내 재처리를 유도한다")
+    void trigger_ended_congestionLookupFails_keepsPendingAndThrows() {
         RouteRecalculation pending = pendingWithNodes(List.of(UUID.randomUUID()));
         given(routeRecalculationRepository.findAllByTrainingSession_IdAndStatus(
                 session.getId(), RecalculationStatus.PENDING)).willReturn(List.of(pending));
         given(currentCongestionWeightProvider.currentMultipliers(any(), eq(floorId), eq(Set.of("CCTV_001"))))
                 .willThrow(new IllegalStateException("DynamoDB 장애"));
 
-        routeRecalculationService.trigger(session, List.of(triggerEdge), CongestionLevel.NORMAL,
-                RecalculationTriggerType.ENDED, "CCTV_001", 1.0);
+        assertThatThrownBy(() -> routeRecalculationService.trigger(session, List.of(triggerEdge),
+                CongestionLevel.NORMAL, RecalculationTriggerType.ENDED, "CCTV_001", 1.0))
+                .isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("errorCode", CongestionErrorCode.EVENT_PROCESSING_FAILED);
 
         assertThat(pending.getStatus()).isEqualTo(RecalculationStatus.PENDING);
         verify(routeRecalculationRepository, never()).save(any());

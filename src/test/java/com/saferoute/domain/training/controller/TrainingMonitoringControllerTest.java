@@ -115,7 +115,9 @@ class TrainingMonitoringControllerTest {
                 "A동 3층",
                 "https://example.com/frame.jpg",
                 1_787_722_095_000L,
-                1_787_725_695_000L
+                1_787_725_695_000L,
+                false,
+                1_787_722_095_300L
         );
         MonitoringCameraResponse secondCamera = new MonitoringCameraResponse(
                 SECOND_CCTV_ID,
@@ -126,7 +128,9 @@ class TrainingMonitoringControllerTest {
                 "A동 4층",
                 "https://example.com/second-frame.jpg",
                 1_787_722_096_000L,
-                1_787_725_696_000L
+                1_787_725_696_000L,
+                false,
+                1_787_722_096_300L
         );
         given(trainingMonitoringService.getCameras(SESSION_ID, EMAIL))
                 .willReturn(new MonitoringCameraListResponse(
@@ -169,7 +173,9 @@ class TrainingMonitoringControllerTest {
                 "A동 1층",
                 "https://example.com/frame.jpg",
                 1_787_722_095_000L,
-                1_787_725_695_000L
+                1_787_725_695_000L,
+                false,
+                1_787_722_095_300L
         );
         MonitoringCameraResponse pendingCamera = new MonitoringCameraResponse(
                 SECOND_CCTV_ID,
@@ -180,6 +186,8 @@ class TrainingMonitoringControllerTest {
                 "A동 2층",
                 null,
                 null,
+                null,
+                true,
                 null
         );
         given(trainingMonitoringService.getCameras(SESSION_ID, EMAIL))
@@ -211,6 +219,8 @@ class TrainingMonitoringControllerTest {
                 "A동 1층",
                 null,
                 null,
+                null,
+                true,
                 null
         );
         given(trainingMonitoringService.getCameras(SESSION_ID, EMAIL))
@@ -350,7 +360,8 @@ class TrainingMonitoringControllerTest {
                 1_787_725_695_000L,
                 12,
                 0.42,
-                CongestionLevel.CROWDED
+                CongestionLevel.CROWDED,
+                1_787_722_095_300L
         );
         given(trainingMonitoringService.getFrames(SESSION_ID, CCTV_ID, 20, null, EMAIL))
                 .willReturn(new MonitoringFrameListResponse(

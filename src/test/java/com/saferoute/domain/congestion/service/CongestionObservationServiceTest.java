@@ -45,6 +45,7 @@ import com.saferoute.domain.training.repository.TrainingSessionRepository;
 import com.saferoute.global.api.error.CongestionErrorCode;
 import com.saferoute.global.api.error.TrainingErrorCode;
 import com.saferoute.global.api.exception.ApiException;
+import com.saferoute.infrastructure.s3.service.S3Service;
 import com.saferoute.infrastructure.websocket.service.TrainingEventPublisher;
 import java.util.List;
 import java.util.Optional;
@@ -99,6 +100,9 @@ class CongestionObservationServiceTest {
     @Mock
     private TrainingEventPublisher trainingEventPublisher;
 
+    @Mock
+    private S3Service s3Service;
+
     private final UUID cctvId = UUID.randomUUID();
     private final UUID buildingId = UUID.randomUUID();
     private final UUID sessionId = UUID.randomUUID();
@@ -126,6 +130,8 @@ class CongestionObservationServiceTest {
         // tryCreateAiAnalysisStartedEvent()의 .created() 체크가 목에서도 NPE 없이 테스트되게 한다.
         org.mockito.Mockito.lenient().when(generalMonitoringEventRepository.saveIfAbsent(any()))
                 .thenAnswer(invocation -> IdempotentSaveResult.created(invocation.getArgument(0)));
+        // 기본은 Pi가 S3 업로드를 끝낸 상태로 본다 - 객체가 없는 경우는 개별 테스트에서 덮어쓴다.
+        org.mockito.Mockito.lenient().when(s3Service.objectExists(anyString())).thenReturn(true);
     }
 
     private ReportObservationRequest request(double avgHeadcount) {
@@ -266,13 +272,33 @@ class CongestionObservationServiceTest {
         verify(routeRecalculationService, never())
                 .triggerAsync(any(), any(), any(), any(), any(), anyDouble(), anyLong());
         verify(routeRecalculationService, never()).trigger(any(), any(), any(), any(), any(), anyDouble());
-        verify(latestMonitoringCaptureRepository).updateIfLatest(argThat(capture ->
-                capture.getTrainingSessionId().equals(sessionId.toString())
-                        && capture.getCctvCode().equals("CCTV_001")
-                        && capture.getCapturedAt().equals(2_000L)
-                        && capture.getMonitoringImageKey() == null
-        ));
+        // 이미지 없는 관측값은 카메라 화면의 최신 캡처 포인터를 건드리지 않는다(마지막 정상 이미지가 지워지지 않게).
+        verify(latestMonitoringCaptureRepository, never()).updateIfLatest(any());
         verify(currentCctvStateRepository).updateIfLatest(any());
+    }
+
+    @Test
+    @DisplayName("관측값·현재 상태·캡처 포인터에 서버 수신 시각(receivedAt)을 함께 저장한다")
+    void reportObservation_storesServerReceivedAt() {
+        TrainingSession session = mock(TrainingSession.class);
+        given(session.getId()).willReturn(sessionId);
+        given(trainingSessionRepository.findByIdAndStatusAndScenario_Building_Id(
+                sessionId, TrainingStatus.RUNNING, buildingId)).willReturn(Optional.of(session));
+        givenProcessingClaimed();
+        givenAffectedEdges();
+        String key = "training/" + sessionId + "/monitoring/CCTV_001/2000.jpg";
+        long before = System.currentTimeMillis();
+
+        service.reportObservation(cctv, request(5.0, key));
+
+        verify(observationRepository).saveIfAbsent(argThat(item ->
+                item.getReceivedAt() != null && item.getReceivedAt() >= before));
+        verify(currentCctvStateRepository).updateIfLatest(argThat(state ->
+                state.getLastReceivedAt() != null && state.getLastReceivedAt() >= before
+                        && state.getLastDetectedAt().equals(2_000L)));
+        verify(latestMonitoringCaptureRepository).updateIfLatest(argThat(capture ->
+                capture.getReceivedAt() != null && capture.getReceivedAt() >= before
+                        && key.equals(capture.getMonitoringImageKey())));
     }
 
     @Test
@@ -394,7 +420,7 @@ class CongestionObservationServiceTest {
 
         verify(observationRepository, never()).claimProcessing(anyString(), anyString(), anyLong(), anyLong());
         verify(generalMonitoringEventRepository, never()).saveIfAbsent(any());
-        verify(routeDeviationService, never()).evaluateObservation(any(), any());
+        verify(routeDeviationService, never()).evaluateObservationAsync(any(), any());
     }
 
     @Test
@@ -427,10 +453,11 @@ class CongestionObservationServiceTest {
 
         verify(observationRepository).saveIfAbsent(argThat(item ->
                 key.equals(item.getMonitoringImageKey())));
+        verify(s3Service).objectExists(key);
     }
 
     @Test
-    @DisplayName("빈 monitoringImageKey는 검증을 통과시키되 null로 정규화해서 저장한다")
+    @DisplayName("빈 monitoringImageKey는 검증을 통과시키되 null로 정규화해서 저장하고 캡처 포인터는 건드리지 않는다")
     void reportObservation_normalizesBlankMonitoringImageKeyToNull() {
         TrainingSession session = mock(TrainingSession.class);
         given(session.getId()).willReturn(sessionId);
@@ -443,97 +470,104 @@ class CongestionObservationServiceTest {
 
         verify(observationRepository).saveIfAbsent(argThat(item ->
                 item.getMonitoringImageKey() == null));
+        verify(latestMonitoringCaptureRepository, never()).updateIfLatest(any());
+        verify(s3Service, never()).objectExists(anyString());
+    }
+
+    @Test
+    @DisplayName("S3에 모니터링 이미지 객체가 없으면 관측값은 저장하되 이미지는 없음(null)으로 처리한다")
+    void reportObservation_dropsMonitoringImageWhenObjectMissingInS3() {
+        TrainingSession session = mock(TrainingSession.class);
+        given(session.getId()).willReturn(sessionId);
+        given(trainingSessionRepository.findByIdAndStatusAndScenario_Building_Id(
+                sessionId, TrainingStatus.RUNNING, buildingId)).willReturn(Optional.of(session));
+        givenProcessingClaimed();
+        givenAffectedEdges();
+        String key = "training/" + sessionId + "/monitoring/CCTV_001/2000.jpg";
+        given(s3Service.objectExists(key)).willReturn(false);
+
+        service.reportObservation(cctv, request(5.0, key));
+
+        verify(observationRepository).saveIfAbsent(argThat(item -> item.getMonitoringImageKey() == null));
+        verify(latestMonitoringCaptureRepository, never()).updateIfLatest(any());
+    }
+
+    @Test
+    @DisplayName("S3 존재 확인 자체가 실패하면(S3 장애) 이미지 key를 그대로 믿고 저장한다")
+    void reportObservation_keepsMonitoringImageWhenS3CheckFails() {
+        TrainingSession session = mock(TrainingSession.class);
+        given(session.getId()).willReturn(sessionId);
+        given(trainingSessionRepository.findByIdAndStatusAndScenario_Building_Id(
+                sessionId, TrainingStatus.RUNNING, buildingId)).willReturn(Optional.of(session));
+        givenProcessingClaimed();
+        givenAffectedEdges();
+        String key = "training/" + sessionId + "/monitoring/CCTV_001/2000.jpg";
+        given(s3Service.objectExists(key)).willThrow(new IllegalStateException("s3 unavailable"));
+
+        service.reportObservation(cctv, request(5.0, key));
+
+        verify(observationRepository).saveIfAbsent(argThat(item -> key.equals(item.getMonitoringImageKey())));
         verify(latestMonitoringCaptureRepository).updateIfLatest(argThat(capture ->
-                capture.getMonitoringImageKey() == null));
+                key.equals(capture.getMonitoringImageKey())));
     }
 
-    @Test
-    @DisplayName("monitoringImageKey의 capturedAt 세그먼트가 canonical decimal이 아니면 CONGESTION010을 반환한다")
-    void reportObservation_rejectsNonCanonicalCapturedAtSegment() {
+    // 이미지 key가 잘못돼도 관측값(인원/밀도)까지 버리지 않는다 - 이미지만 없음(null)으로 저장하고
+    // S3 존재 확인도 하지 않는다(다른 세션/CCTV 객체를 들여다보지 않게).
+    private void assertObservationSavedWithoutImage(String monitoringImageKey) {
         TrainingSession session = mock(TrainingSession.class);
         given(session.getId()).willReturn(sessionId);
         given(trainingSessionRepository.findByIdAndStatusAndScenario_Building_Id(
                 sessionId, TrainingStatus.RUNNING, buildingId)).willReturn(Optional.of(session));
+        givenProcessingClaimed();
+        givenAffectedEdges();
 
-        assertThatThrownBy(() -> service.reportObservation(
-                cctv, request(5.0, "training/" + sessionId + "/monitoring/CCTV_001/+2000.jpg")))
-                .isInstanceOf(ApiException.class)
-                .hasFieldOrPropertyWithValue("errorCode", CongestionErrorCode.MONITORING_IMAGE_KEY_INVALID);
-        assertThatThrownBy(() -> service.reportObservation(
-                cctv, request(5.0, "training/" + sessionId + "/monitoring/CCTV_001/02000.jpg")))
-                .isInstanceOf(ApiException.class)
-                .hasFieldOrPropertyWithValue("errorCode", CongestionErrorCode.MONITORING_IMAGE_KEY_INVALID);
+        service.reportObservation(cctv, request(5.0, monitoringImageKey));
 
-        verify(observationRepository, never()).saveIfAbsent(any());
+        verify(observationRepository).saveIfAbsent(argThat(item ->
+                item.getMonitoringImageKey() == null && item.getAvgHeadcount().equals(5.0)));
+        verify(latestMonitoringCaptureRepository, never()).updateIfLatest(any());
+        verify(s3Service, never()).objectExists(anyString());
     }
 
     @Test
-    @DisplayName("monitoringImageKey 형식이 canonical 경로가 아니면 CONGESTION010을 반환한다")
-    void reportObservation_rejectsMalformedMonitoringImageKey() {
-        TrainingSession session = mock(TrainingSession.class);
-        given(session.getId()).willReturn(sessionId);
-        given(trainingSessionRepository.findByIdAndStatusAndScenario_Building_Id(
-                sessionId, TrainingStatus.RUNNING, buildingId)).willReturn(Optional.of(session));
-
-        assertThatThrownBy(() -> service.reportObservation(
-                cctv, request(5.0, "training/" + sessionId + "/monitoring/CCTV_001/2000.png")))
-                .isInstanceOf(ApiException.class)
-                .hasFieldOrPropertyWithValue("errorCode", CongestionErrorCode.MONITORING_IMAGE_KEY_INVALID);
-
-        verify(observationRepository, never()).saveIfAbsent(any());
+    @DisplayName("monitoringImageKey의 capturedAt 세그먼트가 canonical decimal이 아니면 이미지 없이 관측값만 저장한다")
+    void reportObservation_nonCanonicalCapturedAtSegment_savesWithoutImage() {
+        assertObservationSavedWithoutImage("training/" + sessionId + "/monitoring/CCTV_001/+2000.jpg");
     }
 
     @Test
-    @DisplayName("monitoringImageKey의 세션 ID가 요청 세션과 다르면 CONGESTION011을 반환한다")
-    void reportObservation_rejectsMonitoringImageKeyWithDifferentSession() {
-        TrainingSession session = mock(TrainingSession.class);
-        given(session.getId()).willReturn(sessionId);
-        given(trainingSessionRepository.findByIdAndStatusAndScenario_Building_Id(
-                sessionId, TrainingStatus.RUNNING, buildingId)).willReturn(Optional.of(session));
-        String otherSessionId = UUID.randomUUID().toString();
-
-        assertThatThrownBy(() -> service.reportObservation(
-                cctv, request(5.0, "training/" + otherSessionId + "/monitoring/CCTV_001/2000.jpg")))
-                .isInstanceOf(ApiException.class)
-                .hasFieldOrPropertyWithValue("errorCode", CongestionErrorCode.MONITORING_IMAGE_IDENTITY_MISMATCH);
-
-        verify(observationRepository, never()).saveIfAbsent(any());
+    @DisplayName("monitoringImageKey의 capturedAt 세그먼트에 선행 0이 있으면 이미지 없이 관측값만 저장한다")
+    void reportObservation_leadingZeroCapturedAtSegment_savesWithoutImage() {
+        assertObservationSavedWithoutImage("training/" + sessionId + "/monitoring/CCTV_001/02000.jpg");
     }
 
     @Test
-    @DisplayName("monitoringImageKey의 CCTV 코드가 요청 CCTV와 다르면 CONGESTION011을 반환한다")
-    void reportObservation_rejectsMonitoringImageKeyWithDifferentCctvCode() {
-        TrainingSession session = mock(TrainingSession.class);
-        given(session.getId()).willReturn(sessionId);
-        given(trainingSessionRepository.findByIdAndStatusAndScenario_Building_Id(
-                sessionId, TrainingStatus.RUNNING, buildingId)).willReturn(Optional.of(session));
-
-        assertThatThrownBy(() -> service.reportObservation(
-                cctv, request(5.0, "training/" + sessionId + "/monitoring/CCTV_999/2000.jpg")))
-                .isInstanceOf(ApiException.class)
-                .hasFieldOrPropertyWithValue("errorCode", CongestionErrorCode.MONITORING_IMAGE_IDENTITY_MISMATCH);
-
-        verify(observationRepository, never()).saveIfAbsent(any());
+    @DisplayName("monitoringImageKey 형식이 canonical 경로가 아니면 이미지 없이 관측값만 저장한다")
+    void reportObservation_malformedMonitoringImageKey_savesWithoutImage() {
+        assertObservationSavedWithoutImage("training/" + sessionId + "/monitoring/CCTV_001/2000.png");
     }
 
     @Test
-    @DisplayName("monitoringImageKey의 capturedAt이 요청 capturedAt과 다르면 CONGESTION011을 반환한다")
-    void reportObservation_rejectsMonitoringImageKeyWithDifferentCapturedAt() {
-        TrainingSession session = mock(TrainingSession.class);
-        given(session.getId()).willReturn(sessionId);
-        given(trainingSessionRepository.findByIdAndStatusAndScenario_Building_Id(
-                sessionId, TrainingStatus.RUNNING, buildingId)).willReturn(Optional.of(session));
-
-        assertThatThrownBy(() -> service.reportObservation(
-                cctv, request(5.0, "training/" + sessionId + "/monitoring/CCTV_001/9999.jpg")))
-                .isInstanceOf(ApiException.class)
-                .hasFieldOrPropertyWithValue("errorCode", CongestionErrorCode.MONITORING_IMAGE_IDENTITY_MISMATCH);
-
-        verify(observationRepository, never()).saveIfAbsent(any());
+    @DisplayName("monitoringImageKey의 세션 ID가 요청 세션과 다르면 이미지 없이 관측값만 저장한다")
+    void reportObservation_differentSessionInKey_savesWithoutImage() {
+        assertObservationSavedWithoutImage(
+                "training/" + UUID.randomUUID() + "/monitoring/CCTV_001/2000.jpg");
     }
 
     @Test
-    @DisplayName("유효한 Observation을 저장하면 경로 이탈 판정을 시도한다")
+    @DisplayName("monitoringImageKey의 CCTV 코드가 요청 CCTV와 다르면 이미지 없이 관측값만 저장한다")
+    void reportObservation_differentCctvInKey_savesWithoutImage() {
+        assertObservationSavedWithoutImage("training/" + sessionId + "/monitoring/CCTV_999/2000.jpg");
+    }
+
+    @Test
+    @DisplayName("monitoringImageKey의 capturedAt이 요청 capturedAt과 다르면 이미지 없이 관측값만 저장한다")
+    void reportObservation_differentCapturedAtInKey_savesWithoutImage() {
+        assertObservationSavedWithoutImage("training/" + sessionId + "/monitoring/CCTV_001/9999.jpg");
+    }
+
+    @Test
+    @DisplayName("유효한 Observation을 저장하면 경로 이탈 판정을 비동기로 시도한다")
     void reportObservation_triesToEvaluateRouteDeviation() {
         TrainingSession session = mock(TrainingSession.class);
         given(session.getId()).willReturn(sessionId);
@@ -544,7 +578,7 @@ class CongestionObservationServiceTest {
 
         service.reportObservation(cctv, request(5.0));
 
-        verify(routeDeviationService).evaluateObservation(eq(cctv), argThat(item ->
+        verify(routeDeviationService).evaluateObservationAsync(eq(buildingId), argThat(item ->
                 item.getTrainingSessionId().equals(sessionId.toString())
                         && item.getCctvCode().equals("CCTV_001")
         ));

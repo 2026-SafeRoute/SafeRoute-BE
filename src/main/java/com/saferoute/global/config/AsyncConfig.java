@@ -20,6 +20,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 public class AsyncConfig implements AsyncConfigurer {
 
     public static final String CONGESTION_RECALCULATION_EXECUTOR = "congestionRecalculationExecutor";
+    public static final String ROUTE_DEVIATION_EXECUTOR = "routeDeviationExecutor";
 
     private static final int CORE_POOL_SIZE = 2;
     private static final int MAX_POOL_SIZE = 4;
@@ -28,11 +29,23 @@ public class AsyncConfig implements AsyncConfigurer {
     @Override
     @Bean(CONGESTION_RECALCULATION_EXECUTOR)
     public Executor getAsyncExecutor() {
+        return newExecutor("congestion-recalc-");
+    }
+
+    // 경로 이탈 실시간 판정(RouteDeviationService.evaluateObservationAsync)용 전용 풀. 건물 내 유도등 수만큼
+    // DynamoDB/JPA 조회를 반복하는 작업이라 Pi의 1초 관측 요청 스레드(=DB 커넥션을 쥔 트랜잭션) 안에서 돌리면
+    // CCTV 수가 늘수록 Pi 응답이 늦어지고 커넥션 풀이 고갈된다. 재탐색 풀과 분리해 서로 큐를 밀어내지 않게 한다.
+    @Bean(ROUTE_DEVIATION_EXECUTOR)
+    public Executor routeDeviationExecutor() {
+        return newExecutor("route-deviation-");
+    }
+
+    private Executor newExecutor(String threadNamePrefix) {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
         executor.setCorePoolSize(CORE_POOL_SIZE);
         executor.setMaxPoolSize(MAX_POOL_SIZE);
         executor.setQueueCapacity(QUEUE_CAPACITY);
-        executor.setThreadNamePrefix("congestion-recalc-");
+        executor.setThreadNamePrefix(threadNamePrefix);
         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
         executor.initialize();
         return executor;

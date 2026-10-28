@@ -146,16 +146,22 @@ class CongestionObservationControllerTest {
         assertNull(requestCaptor.getValue().frameHeadcount());
     }
 
+    // Snapshot 프레임이 집계 구간 밖에서 찍히면 peak보다 클 수 있다 - 그 하나 때문에 그 초의 관측값 전체를
+    // 400으로 버리지 않는다.
     @Test
-    @DisplayName("frameHeadcount가 peakHeadcount보다 크면 400을 반환한다")
-    void reportObservation_rejectsFrameHeadcountAbovePeak() throws Exception {
+    @DisplayName("frameHeadcount가 peakHeadcount보다 커도 관측값을 받아들인다")
+    void reportObservation_acceptsFrameHeadcountAbovePeak() throws Exception {
         ObjectNode body = objectMapper.valueToTree(validRequest());
         body.put("frameHeadcount", 9);
+        given(deviceAuthorizationService.validateCctv(any(), org.mockito.ArgumentMatchers.eq("CCTV_001")))
+                .willReturn(Mockito.mock(Cctv.class));
+        given(congestionObservationService.reportObservation(any(), any()))
+                .willReturn(IdempotentSaveResult.created(observation()));
 
         mockMvc.perform(post("/api/v1/device/congestion-observations")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(body)))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isCreated());
     }
 
     @Test

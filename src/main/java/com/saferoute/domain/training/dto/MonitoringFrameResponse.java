@@ -46,7 +46,15 @@ public record MonitoringFrameResponse(
         Double density,
 
         @Schema(description = "이미지 Snapshot 밀집도 기준 혼잡 단계", example = "CROWDED", nullable = true)
-        CongestionLevel congestionLevel
+        CongestionLevel congestionLevel,
+
+        @Schema(
+                description = "이 프레임 관측값을 서버가 받은 시각(Unix epoch milliseconds). capturedAt은 Pi 시계라 "
+                        + "지연 측정은 이 값을 기준으로 한다. 예전 데이터면 null",
+                example = "1787722096200",
+                nullable = true
+        )
+        Long receivedAt
 ) {
 
     public static MonitoringFrameResponse withoutImage(ObservationItem item) {
@@ -59,7 +67,8 @@ public record MonitoringFrameResponse(
                 null,
                 frameHeadcount(item),
                 frameDensity(item),
-                frameCongestionLevel(item)
+                frameCongestionLevel(item),
+                item.getReceivedAt()
         );
     }
 
@@ -73,7 +82,8 @@ public record MonitoringFrameResponse(
                 presignedGetUrl.expiresAt().toEpochMilli(),
                 frameHeadcount(item),
                 frameDensity(item),
-                frameCongestionLevel(item)
+                frameCongestionLevel(item),
+                item.getReceivedAt()
         );
     }
 

@@ -30,11 +30,13 @@ import com.saferoute.domain.training.repository.TrainingSessionRepository;
 import com.saferoute.domain.user.entity.User;
 import com.saferoute.domain.user.repository.UserRepository;
 import com.saferoute.domain.user.service.SchoolContextService;
+import com.saferoute.global.api.error.CongestionErrorCode;
 import com.saferoute.global.api.error.EvacuationErrorCode;
 import com.saferoute.global.api.error.TrainingErrorCode;
 import com.saferoute.global.api.exception.ApiException;
 import com.saferoute.global.config.AsyncConfig;
 import com.saferoute.infrastructure.websocket.service.TrainingEventPublisher;
+import io.micrometer.core.instrument.Metrics;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -71,7 +73,10 @@ public class RouteRecalculationService {
     // 건너뛴다 - 그 사이 같은 CCTV의 CONGESTION_ENDED가 동기로 먼저 처리돼 복구 PENDING을
     // 만들어 놨을 수 있는데, 뒤늦게 도착한 낡은 STARTED/LEVEL_UP이 그 복구를 취소하고 이미
     // 끝난 혼잡 기준으로 다시 우회 PENDING을 만들어버리면 안 되기 때문이다.
+    // 기준은 서버가 적재한 시각이다 - Pi 시계(capturedAt)로 재면 Pi 시계가 20초만 느려도 모든 재탐색이
+    // 조용히 버려지고, 빠르면 이 가드가 아예 동작하지 않는다.
     private static final long MAX_ASYNC_TRIGGER_STALENESS_MS = 20_000L;
+    private static final String ASYNC_TRIGGER_DROPPED_METRIC = "saferoute.recalculation.async_dropped";
 
     private final RouteRecalculationRepository routeRecalculationRepository;
     private final EvacuationRouteService evacuationRouteService;
@@ -257,9 +262,10 @@ public class RouteRecalculationService {
     // 않았다면 완전히 다른 스레드에서 도는 이 메서드가 건드리는 순간 LazyInitializationException이
     // 난다. 그래서 이 메서드 자신의 트랜잭션 안에서 id로 다시 읽어온다(reloadEdges).
     //
-    // capturedAtMs(요청의 captured/detected 시각)로 신선도도 함께 확인한다 - 실행기 큐가
+    // enqueuedAtMs(호출자가 이 작업을 적재한 서버 시각)로 신선도도 함께 확인한다 - 실행기 큐가
     // 밀려서 너무 늦게 실행된 낡은 판단이, 그 사이 동기로 먼저 끝난 ENDED 복구를 되돌리고
-    // 낡은 혼잡 기준으로 새 우회 PENDING을 만드는 것을 막기 위함이다.
+    // 낡은 혼잡 기준으로 새 우회 PENDING을 만드는 것을 막기 위함이다. 버려진 횟수는 메트릭으로
+    // 남겨, 혼잡인데 제안이 안 뜨는 상황이 큐 적체 때문인지 운영자가 구분할 수 있게 한다.
     //
     // self-invocation 주의: @Async는 외부에서 프록시를 통해 호출될 때만 적용되므로 반드시
     // 다른 빈(CongestionObservationService 등)이 호출해야 한다. 이 메서드 자신에 @Transactional을
@@ -273,12 +279,13 @@ public class RouteRecalculationService {
     @Async(AsyncConfig.CONGESTION_RECALCULATION_EXECUTOR)
     @Transactional
     public void triggerAsync(TrainingSession session, List<UUID> affectedEdgeIds, CongestionLevel level,
-            RecalculationTriggerType triggerType, String cctvCode, double density, long capturedAtMs) {
-        long stalenessMs = System.currentTimeMillis() - capturedAtMs;
+            RecalculationTriggerType triggerType, String cctvCode, double density, long enqueuedAtMs) {
+        long stalenessMs = System.currentTimeMillis() - enqueuedAtMs;
         if (stalenessMs > MAX_ASYNC_TRIGGER_STALENESS_MS) {
             log.warn("재탐색 비동기 작업이 너무 오래 지체돼 건너뜀(낡은 판단이 더 최근 처리를 "
                             + "덮어쓰는 것을 방지): sessionId={}, cctvCode={}, triggerType={}, stalenessMs={}",
                     session.getId(), cctvCode, triggerType, stalenessMs);
+            Metrics.counter(ASYNC_TRIGGER_DROPPED_METRIC, "triggerType", triggerType.name()).increment();
             return;
         }
         List<MapEdge> affectedEdges = reloadEdges(affectedEdgeIds);
@@ -629,7 +636,9 @@ public class RouteRecalculationService {
     // 혼잡 종료(ENDED) 처리. 끝난 CCTV 하나만 보고 "정상(직행) 경로로 복구"하면 다른 CCTV가 아직 혼잡한
     // 구간으로 다시 안내될 수 있으므로, 층 전체의 현재 혼잡(끝난 CCTV 몫만 제외)과 화재를 반영한 경로를
     // 기준으로 삼는다 - trigger()의 혼잡 우회와 같은 기준이다.
-    // - 혼잡 상태 조회가 실패하면 불완전한 정보로 판단하지 않고 기존 PENDING을 그대로 둔 채 건너뛴다.
+    // - 혼잡 상태 조회가 실패하면 불완전한 정보로 판단하지 않고 기존 PENDING을 그대로 둔 채 예외를 던진다.
+    //   LEVEL_UP과 달리 ENDED는 Pi가 한 번만 보내는 신호라 조용히 건너뛰면 복구 제안이 영영 사라진다 -
+    //   예외로 끝내야 CongestionEventService가 이벤트를 FAILED로 남기고 Pi 재전송이 다시 처리한다.
     // - 기존 PENDING은 일괄 취소하지 않는다. 이번 후보와 같은 PENDING은 남기고(다른 CCTV 혼잡 때문에
     //   생긴 여전히 유효한 제안일 수 있다) 다른 것만 취소한다.
     // - 새 PENDING(복구 제안)은 승인된 우회가 있을 때만 만든다. 승인된 우회가 없는 상태의 우회 제안은
@@ -642,7 +651,7 @@ public class RouteRecalculationService {
         Optional<Map<UUID, Double>> congestionMultipliers =
                 currentCongestionMultipliersOrFail(session.getId(), floorId, endedCctvCodes);
         if (congestionMultipliers.isEmpty()) {
-            return;
+            throw new ApiException(CongestionErrorCode.EVENT_PROCESSING_FAILED);
         }
 
         // 혼잡이 끝나 복구하려는 순간에도 그 사이 화재가 번졌을 수 있으므로, 후보 역시 지금 이

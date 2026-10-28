@@ -2,6 +2,7 @@ package com.saferoute.infrastructure.websocket.dto;
 
 import com.saferoute.domain.congestion.entity.CongestionLevel;
 import com.saferoute.domain.telemetry.dynamo.entity.ObservationItem;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -25,7 +26,12 @@ public record CongestionEventData(
         // 이미지는 presigned URL 만료 문제로 WebSocket payload에 직접 포함하지 않는다.
         // true면 프론트가 카메라/프레임 조회 REST API를 재호출해서 새 presigned URL을 받아야 한다.
         // REST의 frameId와 이 payload의 eventId를 비교하면 같은 프레임인지 확인할 수 있다 (이슈 #192).
-        boolean hasMonitoringImage
+        // BE가 S3에 객체가 있는지 확인한 뒤 세우므로(CongestionObservationService) true면 바로 조회해도 된다.
+        boolean hasMonitoringImage,
+        // 지연 구간 분리용 서버 시각(Unix epoch ms). capturedAt(Pi 시계)->receivedAt은 Pi 추론+S3 업로드+전송,
+        // receivedAt->publishedAt은 BE 처리, publishedAt->프론트 수신은 WebSocket 구간이다.
+        Long receivedAt,
+        Long publishedAt
 ) {
 
     public static CongestionEventData from(List<UUID> affectedEdgeIds, ObservationItem item) {
@@ -41,7 +47,9 @@ public record CongestionEventData(
                 item.getWindowEnd(),
                 item.getCapturedAt(),
                 item.getConfigVersion(),
-                item.getMonitoringImageKey() != null && !item.getMonitoringImageKey().isBlank()
+                item.getMonitoringImageKey() != null && !item.getMonitoringImageKey().isBlank(),
+                item.getReceivedAt(),
+                Instant.now().toEpochMilli()
         );
     }
 }

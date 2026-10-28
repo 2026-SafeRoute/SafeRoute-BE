@@ -52,6 +52,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -112,6 +113,8 @@ class CongestionEventServiceTest {
                 .thenReturn(CongestionConfig.createDefault());
         // 기본은 GridCell 4개(면적 4.0m2)로, headcount=5 -> density=1.25 (NORMAL)
         org.mockito.Mockito.lenient().when(cctvGridCellRepository.countByCctv_Id(cctvId)).thenReturn(4);
+        // 기본은 이 이벤트가 그 CCTV의 최신 이벤트인 상황 - 늦게 도착한 옛 이벤트는 개별 테스트에서 false로 덮어쓴다.
+        org.mockito.Mockito.lenient().when(currentCongestionEventRepository.updateIfLatest(any())).thenReturn(true);
     }
 
     private ReportCongestionEventRequest request(int headcount) {
@@ -127,12 +130,9 @@ class CongestionEventServiceTest {
     }
 
     private void givenProcessingClaimed() {
-        given(congestionEventRepository.updateEventStatus(
-                anyString(), eq(EventProcessingStatus.RECEIVED), eq(EventProcessingStatus.PROCESSING)))
+        given(congestionEventRepository.claimProcessing(anyString(), anyString(), anyLong(), anyLong()))
                 .willReturn(true);
-        given(congestionEventRepository.updateEventStatus(
-                anyString(), eq(EventProcessingStatus.PROCESSING), eq(EventProcessingStatus.PROCESSED)))
-                .willReturn(true);
+        given(congestionEventRepository.completeProcessing(anyString(), anyString())).willReturn(true);
     }
 
     private MapEdge edge(UUID id) {
@@ -334,7 +334,7 @@ class CongestionEventServiceTest {
         verify(routeRecalculationService, never())
                 .triggerAsync(any(), any(), any(), any(), any(), anyDouble(), anyLong());
         verify(routeRecalculationService, never()).trigger(any(), any(), any(), any(), any(), anyDouble());
-        verify(congestionEventRepository, never()).updateEventStatus(anyString(), any(), any());
+        verify(congestionEventRepository, never()).claimProcessing(anyString(), anyString(), anyLong(), anyLong());
     }
 
     @Test
@@ -354,7 +354,7 @@ class CongestionEventServiceTest {
                 .isInstanceOf(ApiException.class)
                 .hasFieldOrPropertyWithValue("errorCode", CongestionErrorCode.EVENT_IDENTITY_MISMATCH);
 
-        verify(congestionEventRepository, never()).updateEventStatus(anyString(), any(), any());
+        verify(congestionEventRepository, never()).claimProcessing(anyString(), anyString(), anyLong(), anyLong());
     }
 
     @Test
@@ -378,7 +378,7 @@ class CongestionEventServiceTest {
     }
 
     @Test
-    @DisplayName("중복 eventId가 PROCESSING이면 재처리하지 않고 그대로 반환한다")
+    @DisplayName("중복 eventId가 다른 요청에 의해 처리 중(lease 유효)이면 재처리하지 않고 그대로 반환한다")
     void reportCongestionEvent_doesNotReprocessInFlightDuplicate() {
         TrainingSession session = mock(TrainingSession.class);
         given(session.getId()).willReturn(sessionId);
@@ -389,6 +389,8 @@ class CongestionEventServiceTest {
             existing.setEventStatus(EventProcessingStatus.PROCESSING);
             return IdempotentSaveResult.existing(existing);
         });
+        given(congestionEventRepository.claimProcessing(anyString(), anyString(), anyLong(), anyLong()))
+                .willReturn(false);
 
         var result = service.reportCongestionEvent(cctv, request(13));
 
@@ -397,6 +399,55 @@ class CongestionEventServiceTest {
         verify(routeRecalculationService, never())
                 .triggerAsync(any(), any(), any(), any(), any(), anyDouble(), anyLong());
         verify(routeRecalculationService, never()).trigger(any(), any(), any(), any(), any(), anyDouble());
+    }
+
+    @Test
+    @DisplayName("lease 선점은 서버 수신 시각 기준 PROCESSING_LEASE 만큼의 만료 시각으로 요청한다")
+    void reportCongestionEvent_claimsProcessingWithLease() {
+        TrainingSession session = mock(TrainingSession.class);
+        given(session.getId()).willReturn(sessionId);
+        given(trainingSessionRepository.findByIdAndStatusAndScenario_Building_Id(
+                sessionId, TrainingStatus.RUNNING, buildingId)).willReturn(Optional.of(session));
+        givenSaveCreatesItem();
+        givenProcessingClaimed();
+        givenAffectedEdges();
+        long before = System.currentTimeMillis();
+
+        service.reportCongestionEvent(cctv, request(5));
+
+        ArgumentCaptor<Long> startedAt = ArgumentCaptor.forClass(Long.class);
+        ArgumentCaptor<Long> expiresAt = ArgumentCaptor.forClass(Long.class);
+        verify(congestionEventRepository).claimProcessing(
+                anyString(), anyString(), startedAt.capture(), expiresAt.capture());
+        assertThat(startedAt.getValue()).isGreaterThanOrEqualTo(before);
+        assertThat(expiresAt.getValue() - startedAt.getValue())
+                .isEqualTo(CongestionEventService.PROCESSING_LEASE.toMillis());
+        verify(congestionEventRepository).saveReceivedIfAbsent(argThat(item ->
+                item.getReceivedAt() != null && item.getReceivedAt() >= before));
+    }
+
+    @Test
+    @DisplayName("늦게 도착한 옛 이벤트(더 새로운 이벤트가 이미 기록됨)는 저장·발행만 하고 재탐색은 건너뛴다")
+    void reportCongestionEvent_staleEvent_publishesButSkipsRecalculation() {
+        TrainingSession session = mock(TrainingSession.class);
+        given(session.getId()).willReturn(sessionId);
+        given(trainingSessionRepository.findByIdAndStatusAndScenario_Building_Id(
+                sessionId, TrainingStatus.RUNNING, buildingId)).willReturn(Optional.of(session));
+        givenSaveCreatesItem();
+        givenProcessingClaimed();
+        givenAffectedEdges(edge(UUID.randomUUID()));
+        given(currentCongestionEventRepository.updateIfLatest(any())).willReturn(false);
+
+        ReportCongestionEventRequest staleEnded = new ReportCongestionEventRequest(
+                UUID.randomUUID(), sessionId, "CCTV_001", CongestionEventType.CONGESTION_ENDED,
+                1_000L, 5, 1.25, CongestionLevel.NORMAL, 1L);
+        service.reportCongestionEvent(cctv, staleEnded);
+
+        verify(routeRecalculationService, never()).trigger(any(), any(), any(), any(), any(), anyDouble());
+        verify(routeRecalculationService, never())
+                .triggerAsync(any(), any(), any(), any(), any(), anyDouble(), anyLong());
+        verify(trainingEventPublisher).publishCongestionEventReceived(eq(sessionId), any(), any());
+        verify(congestionEventRepository).completeProcessing(anyString(), anyString());
     }
 
     @Test
@@ -432,12 +483,9 @@ class CongestionEventServiceTest {
         given(trainingSessionRepository.findByIdAndStatusAndScenario_Building_Id(
                 sessionId, TrainingStatus.RUNNING, buildingId)).willReturn(Optional.of(session));
         givenSaveCreatesItem();
-        given(congestionEventRepository.updateEventStatus(
-                anyString(), eq(EventProcessingStatus.RECEIVED), eq(EventProcessingStatus.PROCESSING)))
+        given(congestionEventRepository.claimProcessing(anyString(), anyString(), anyLong(), anyLong()))
                 .willReturn(true);
-        given(congestionEventRepository.updateEventStatus(
-                anyString(), eq(EventProcessingStatus.PROCESSING), eq(EventProcessingStatus.FAILED)))
-                .willReturn(true);
+        given(congestionEventRepository.failProcessing(anyString(), anyString())).willReturn(true);
         doThrow(new IllegalStateException("websocket unavailable"))
                 .when(trainingEventPublisher).publishCongestionEventReceived(any(), any(), any());
 
@@ -445,8 +493,7 @@ class CongestionEventServiceTest {
                 .isInstanceOf(ApiException.class)
                 .hasFieldOrPropertyWithValue("errorCode", CongestionErrorCode.EVENT_PROCESSING_FAILED);
 
-        verify(congestionEventRepository).updateEventStatus(
-                anyString(), eq(EventProcessingStatus.PROCESSING), eq(EventProcessingStatus.FAILED));
+        verify(congestionEventRepository).failProcessing(anyString(), anyString());
     }
 
     @Test
@@ -463,8 +510,7 @@ class CongestionEventServiceTest {
         try {
             service.reportCongestionEvent(cctv, request(5));
 
-            verify(congestionEventRepository, never()).updateEventStatus(
-                    anyString(), eq(EventProcessingStatus.PROCESSING), eq(EventProcessingStatus.PROCESSED));
+            verify(congestionEventRepository, never()).completeProcessing(anyString(), anyString());
             verify(trainingEventPublisher, never())
                     .publishCongestionEventReceived(any(), any(), any());
 
@@ -473,8 +519,7 @@ class CongestionEventServiceTest {
             synchronization.afterCommit();
             synchronization.afterCompletion(TransactionSynchronization.STATUS_COMMITTED);
 
-            verify(congestionEventRepository).updateEventStatus(
-                    anyString(), eq(EventProcessingStatus.PROCESSING), eq(EventProcessingStatus.PROCESSED));
+            verify(congestionEventRepository).completeProcessing(anyString(), anyString());
             verify(trainingEventPublisher).publishCongestionEventReceived(any(), any(), any());
         } finally {
             TransactionSynchronizationManager.clearSynchronization();
@@ -489,12 +534,9 @@ class CongestionEventServiceTest {
         given(trainingSessionRepository.findByIdAndStatusAndScenario_Building_Id(
                 sessionId, TrainingStatus.RUNNING, buildingId)).willReturn(Optional.of(session));
         givenSaveCreatesItem();
-        given(congestionEventRepository.updateEventStatus(
-                anyString(), eq(EventProcessingStatus.RECEIVED), eq(EventProcessingStatus.PROCESSING)))
+        given(congestionEventRepository.claimProcessing(anyString(), anyString(), anyLong(), anyLong()))
                 .willReturn(true);
-        given(congestionEventRepository.updateEventStatus(
-                anyString(), eq(EventProcessingStatus.PROCESSING), eq(EventProcessingStatus.FAILED)))
-                .willReturn(true);
+        given(congestionEventRepository.failProcessing(anyString(), anyString())).willReturn(true);
 
         TransactionSynchronizationManager.initSynchronization();
         try {
@@ -506,10 +548,8 @@ class CongestionEventServiceTest {
                     .getSynchronizations().get(0);
             synchronization.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK);
 
-            verify(congestionEventRepository).updateEventStatus(
-                    anyString(), eq(EventProcessingStatus.PROCESSING), eq(EventProcessingStatus.FAILED));
-            verify(congestionEventRepository, never()).updateEventStatus(
-                    anyString(), eq(EventProcessingStatus.PROCESSING), eq(EventProcessingStatus.PROCESSED));
+            verify(congestionEventRepository).failProcessing(anyString(), anyString());
+            verify(congestionEventRepository, never()).completeProcessing(anyString(), anyString());
         } finally {
             TransactionSynchronizationManager.clearSynchronization();
         }

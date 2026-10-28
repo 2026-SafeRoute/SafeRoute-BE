@@ -43,8 +43,8 @@ import org.springframework.transaction.annotation.Transactional;
 // 마지막 관측이 stateStaleAfterSec보다 오래된 CCTV는 혼잡이 아닌 것으로 본다(모니터링 화면의 stale 판정과
 // 같은 기준). Pi나 카메라가 혼잡 상태에서 끊기면 마지막 상태가 그대로 남아, 아무도 없는 구간이 훈련이
 // 끝날 때까지 페널티를 받고 경로/유도등이 그 구간을 계속 피하게 되기 때문이다. 이 판정은 Pi가 보낸
-// 관측 시각(capturedAt)을 서버 시각과 비교하므로 Pi 시계가 NTP로 맞춰져 있다는 전제 위에 있다(모니터링
-// 화면도 같은 전제를 쓴다).
+// 관측 시각(capturedAt)이 아니라 BE가 받은 서버 시각(receivedAt)을 서버 시각과 비교한다 - Pi 시계가 15초만
+// 틀려도 모든 CCTV가 stale로 빠져 혼잡 가중치가 통째로 무시되는 일을 막기 위함(모니터링 화면도 같은 기준).
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -83,7 +83,7 @@ public class CurrentCongestionWeightProvider {
             if (excludedCctvCodes.contains(state.getCctvCode())) {
                 continue;
             }
-            boolean stale = isStale(state.getLastDetectedAt(), now, stateStaleAfterSec);
+            boolean stale = isStale(state.effectiveReceivedAt(), now, stateStaleAfterSec);
             if (!stale) {
                 liveCctvCodes.add(state.getCctvCode());
             }
@@ -111,7 +111,7 @@ public class CurrentCongestionWeightProvider {
             if (multiplier <= 1.0) {
                 continue;
             }
-            if (!liveCctvCodes.contains(cctvCode) && isStale(event.getDetectedAt(), now, stateStaleAfterSec)) {
+            if (!liveCctvCodes.contains(cctvCode) && isStale(event.effectiveReceivedAt(), now, stateStaleAfterSec)) {
                 staleCctvCodes.add(cctvCode);
                 continue;
             }
@@ -155,15 +155,14 @@ public class CurrentCongestionWeightProvider {
         return multiplierByEdgeId;
     }
 
-    // TrainingMonitoringService.toStateResponse()와 같은 기준(`>`)을 써야 화면에 stale로 표시되는 CCTV와
-    // 경로 계산에서 빠지는 CCTV가 정확히 같다. 다만 그쪽은 lastDetectedAt이 null이면 NPE가 나므로 그대로
-    // 복사하지 않고, 관측 시각을 알 수 없는 상태는 오래된 것으로 본다. 설정값이 없으면(실제로는 기본값
-    // 생성 때문에 없다) 필터를 적용하지 않아 기존 동작을 유지한다.
-    private boolean isStale(Long lastDetectedAt, long now, Integer stateStaleAfterSec) {
+    // TrainingMonitoringService.isStale()과 같은 기준(`>`, 서버 수신 시각)을 써야 화면에 stale로 표시되는 CCTV와
+    // 경로 계산에서 빠지는 CCTV가 정확히 같다. 수신 시각을 알 수 없는 상태는 오래된 것으로 본다. 설정값이
+    // 없으면(실제로는 기본값 생성 때문에 없다) 필터를 적용하지 않아 기존 동작을 유지한다.
+    private boolean isStale(Long receivedAt, long now, Integer stateStaleAfterSec) {
         if (stateStaleAfterSec == null) {
             return false;
         }
-        return lastDetectedAt == null || now - lastDetectedAt > stateStaleAfterSec * 1_000L;
+        return receivedAt == null || now - receivedAt > stateStaleAfterSec * 1_000L;
     }
 
     private double multiplierFor(CongestionLevel level) {

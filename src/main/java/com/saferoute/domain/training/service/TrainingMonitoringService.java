@@ -80,8 +80,13 @@ public class TrainingMonitoringService {
                                 Function.identity()
                         ));
 
+        // 현재 상태(getCurrentStates)와 같은 기준으로 카메라 카드에도 stale을 표시한다 - 그러지 않으면 Pi가 끊겨도
+        // 마지막 이미지가 라이브처럼 계속 보여 "안 뜬다"는 상황과 구분이 안 된다.
+        long observedAt = Instant.now().toEpochMilli();
+        int stateStaleAfterSec = congestionConfigService.getConfig().getStateStaleAfterSec();
         List<MonitoringCameraResponse> cameras = cctvs.stream()
-                .map(cctv -> toResponse(cctv, capturesByCctvCode.get(cctv.getCode())))
+                .map(cctv -> toResponse(
+                        cctv, capturesByCctvCode.get(cctv.getCode()), observedAt, stateStaleAfterSec))
                 .toList();
         return new MonitoringCameraListResponse(sessionId, cameras);
     }
@@ -145,8 +150,14 @@ public class TrainingMonitoringService {
         if (item == null) {
             return CurrentCctvStateResponse.withoutState(cctv);
         }
-        boolean stale = observedAt - item.getLastDetectedAt() > stateStaleAfterSec * 1_000L;
+        // Pi 시계(lastDetectedAt)가 아니라 서버 수신 시각 기준으로 판정한다 - Pi 시계가 15초만 틀려도 멀쩡히
+        // 보내고 있는 CCTV가 전부 "끊김"으로 보이기 때문이다. CurrentCongestionWeightProvider.isStale과 같은 기준.
+        boolean stale = isStale(item.effectiveReceivedAt(), observedAt, stateStaleAfterSec);
         return CurrentCctvStateResponse.withState(cctv, item, stale);
+    }
+
+    private static boolean isStale(Long receivedAt, long observedAt, int stateStaleAfterSec) {
+        return receivedAt == null || observedAt - receivedAt > stateStaleAfterSec * 1_000L;
     }
 
     public MonitoringFrameListResponse getFrames(
@@ -297,12 +308,15 @@ public class TrainingMonitoringService {
 
     private MonitoringCameraResponse toResponse(
             Cctv cctv,
-            LatestMonitoringCaptureItem capture
+            LatestMonitoringCaptureItem capture,
+            long observedAt,
+            int stateStaleAfterSec
     ) {
         if (!hasMonitoringImage(capture)) {
             return MonitoringCameraResponse.withoutCapture(cctv);
         }
-        return withCapture(cctv, capture);
+        boolean stale = isStale(capture.effectiveReceivedAt(), observedAt, stateStaleAfterSec);
+        return withCapture(cctv, capture, stale);
     }
 
     private boolean hasMonitoringImage(LatestMonitoringCaptureItem capture) {
@@ -311,13 +325,16 @@ public class TrainingMonitoringService {
                 && !capture.getMonitoringImageKey().isBlank();
     }
 
-    private MonitoringCameraResponse withCapture(Cctv cctv, LatestMonitoringCaptureItem capture) {
+    private MonitoringCameraResponse withCapture(
+            Cctv cctv, LatestMonitoringCaptureItem capture, boolean stale) {
         PresignedGetUrl presignedGetUrl =
                 s3PresignedUrlService.createGetUrl(capture.getMonitoringImageKey());
         return MonitoringCameraResponse.withCapture(
                 cctv,
                 capture.getCapturedAt(),
-                presignedGetUrl
+                capture.getReceivedAt(),
+                presignedGetUrl,
+                stale
         );
     }
 }

@@ -477,6 +477,46 @@ class RouteDeviationServiceTest {
     }
 
     @Test
+    @DisplayName("관측값에 서버 수신 시각(receivedAt)이 있으면 Pi 시계(capturedAt) 대신 그 시각으로 방향 조회와 상태 전이를 한다")
+    void evaluateObservation_prefersServerReceivedAtOverCapturedAt() {
+        IoTLight light = lightWithGuidance();
+        mapLightToDistinctCctvs(light);
+        given(iotLightJpaRepository.findAllByCustomNode_Floor_Building_Id(buildingId)).willReturn(List.of(light));
+        // 유도등은 서버 시각 4_500에 LEFT로 바뀌었다. Pi 시계로는 4_000(전환 전)이지만 서버는 5_000에 받았다.
+        given(lightDirectionEventRepository.findAllBySessionIdAndLightCode(sessionId.toString(), light.getCode()))
+                .willReturn(List.of(directionEvent(light, IoTLightDirection.LEFT, 4_500L)));
+        given(routeDeviationStateRepository.find(sessionId.toString(), light.getId())).willReturn(Optional.empty());
+        given(routeDeviationStateRepository.saveIfNewer(any())).willReturn(true);
+
+        ObservationItem observation = observation("CCTV_RIGHT", 3.0, 4_000L);
+        observation.setReceivedAt(5_000L);
+        routeDeviationService.evaluateObservation(incomingCctv(), observation);
+
+        ArgumentCaptor<RouteDeviationStateItem> stateCaptor = ArgumentCaptor.forClass(RouteDeviationStateItem.class);
+        verify(routeDeviationStateRepository).saveIfNewer(stateCaptor.capture());
+        assertThat(stateCaptor.getValue().getState()).isEqualTo(RouteDeviationState.DEVIATING);
+        assertThat(stateCaptor.getValue().getLastProcessedCapturedAt()).isEqualTo(5_000L);
+        verify(generalMonitoringEventRepository).saveIfAbsent(argThat(item -> item.getOccurredAt() == 5_000L));
+    }
+
+    @Test
+    @DisplayName("evaluateObservationAsync는 buildingId만으로 같은 판정을 수행한다")
+    void evaluateObservationAsync_evaluatesWithBuildingIdOnly() {
+        IoTLight light = lightWithGuidance();
+        mapLightToDistinctCctvs(light);
+        given(iotLightJpaRepository.findAllByCustomNode_Floor_Building_Id(buildingId)).willReturn(List.of(light));
+        given(lightDirectionEventRepository.findAllBySessionIdAndLightCode(sessionId.toString(), light.getCode()))
+                .willReturn(List.of(directionEvent(light, IoTLightDirection.LEFT, 1_000L)));
+        given(routeDeviationStateRepository.find(sessionId.toString(), light.getId())).willReturn(Optional.empty());
+        given(routeDeviationStateRepository.saveIfNewer(any())).willReturn(true);
+
+        routeDeviationService.evaluateObservationAsync(buildingId, observation("CCTV_RIGHT", 3.0, 5_000L));
+
+        verify(routeDeviationStateRepository).saveIfNewer(argThat(item ->
+                item.getState() == RouteDeviationState.DEVIATING));
+    }
+
+    @Test
     @DisplayName("한 유도등 평가에서 예외가 나도 나머지 유도등은 계속 평가한다")
     void evaluateObservation_oneLightThrows_stillEvaluatesRemainingLights() {
         IoTLight brokenLight = lightWithGuidance("LIGHT_BROKEN", UUID.randomUUID());

@@ -202,6 +202,11 @@ public class IoTLightService {
     // 전환 이력만 경로 이탈률 계산을 위해 DynamoDB(LightDirectionEventItem)에 별도로 남긴다.
     // 주의: 아래 상태 저장/이력 기록/이벤트 발행은 ACK(실제 실행 확인)를 기다리지 않고
     // 명령을 적재하는 시점에 낙관적으로 수행한다 - Pi가 실행에 실패해도 이 시점에는 알 수 없다.
+    // 클래스 기본이 readOnly라 여기서 쓰기 트랜잭션을 명시해야 한다 - 빠뜨리면 Hibernate flush가 MANUAL이라
+    // LightCommand 적재/SUPERSEDED 처리가 예외 없이 조용히 버려지고(메모리 store·WebSocket만 바뀜), Pi는
+    // 명령을 영영 받지 못한다. 승인/훈련 시작·종료 경로(applyFloorGuidance/resetToNormal)는 호출자의 쓰기
+    // 트랜잭션에 참여하므로 영향이 없었고, 관리자 수동 전환 API만 이 문제를 겪었다.
+    @Transactional
     public LightDirectionResponse changeDirection(
             UUID lightId, ChangeLightDirectionRequest request, String email) {
         IoTLight light = findLightForSchoolOrThrow(lightId, email);
