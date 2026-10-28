@@ -5,6 +5,13 @@ spring:
   profiles:
     default: local
 
+  task:
+    scheduling:
+      # 화재 확산/훈련 타임아웃/유도등 명령 타임아웃 스케줄러에 WebSocket STOMP 하트비트까지 같은 스케줄러를
+      # 쓰므로(WebSocketConfig 참고), 기본 1스레드면 한 스케줄 작업이 길어질 때 하트비트가 밀려 연결이 끊긴다.
+      pool:
+        size: 4
+
   servlet:
     multipart:
       max-file-size: ${MAX_FILE_SIZE:50MB}
@@ -47,7 +54,9 @@ aws:
 
   s3:
     bucket: ${S3_BUCKET}
-    presigned-url-expiration: 1m
+    # Pi가 URL을 받은 뒤 업로드까지 업링크 지연/재시도로 1분을 넘기면 403이 나서 그 초의 카메라 이미지가
+    # 통째로 빠진다. 관측 주기(1초)보다 훨씬 넉넉하게 5분으로 잡는다.
+    presigned-url-expiration: 5m
     # 훈련이 진행되는 동안 도면/관측 이미지를 계속 띄워놔야 하므로 업로드용(1분)보다 넉넉하게 1시간으로 잡는다.
     presigned-get-url-expiration: 1h
 

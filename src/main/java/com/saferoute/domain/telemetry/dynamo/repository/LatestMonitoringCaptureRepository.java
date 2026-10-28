@@ -30,14 +30,16 @@ public class LatestMonitoringCaptureRepository {
         );
     }
 
+    // "더 최신 캡처인지"는 서버 수신 시각(receivedAt)으로 비교한다(CurrentCctvStateRepository와 같은 이유 -
+    // Pi 시계가 뒤로 보정되면 화면이 그 시간차만큼 멈춘다). receivedAt이 없는 예전 호출/데이터는 capturedAt으로 비교한다.
     public boolean updateIfLatest(LatestMonitoringCaptureItem incoming) {
+        boolean byReceivedAt = incoming.getReceivedAt() != null;
+        String attribute = byReceivedAt ? "receivedAt" : "capturedAt";
+        long incomingTimestamp = byReceivedAt ? incoming.getReceivedAt() : incoming.getCapturedAt();
         Expression condition = Expression.builder()
-                .expression("attribute_not_exists(#capturedAt) OR :incomingCapturedAt >= #capturedAt")
-                .putExpressionName("#capturedAt", "capturedAt")
-                .putExpressionValue(
-                        ":incomingCapturedAt",
-                        AttributeValue.fromN(Long.toString(incoming.getCapturedAt()))
-                )
+                .expression("attribute_not_exists(#timestamp) OR :incomingTimestamp >= #timestamp")
+                .putExpressionName("#timestamp", attribute)
+                .putExpressionValue(":incomingTimestamp", AttributeValue.fromN(Long.toString(incomingTimestamp)))
                 .build();
         PutItemEnhancedRequest<LatestMonitoringCaptureItem> request =
                 PutItemEnhancedRequest.builder(LatestMonitoringCaptureItem.class)

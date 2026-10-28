@@ -33,6 +33,13 @@ public class CongestionEventItem {
     private Long imageUploadedAt;
     private EventProcessingStatus eventStatus;
     private ImageUploadStatus imageUploadStatus;
+    // BE가 이 이벤트를 받은 서버 시각(detectedAt은 Pi 시계). 예전 데이터에는 없을 수 있다(null).
+    private Long receivedAt;
+    // 처리 lease(ObservationItem과 같은 구조). 처리 중 서버가 죽어 PROCESSING에 영원히 갇히는 일을
+    // 막기 위해, 만료된 PROCESSING은 다른 요청(Pi 재전송)이 다시 선점할 수 있게 한다.
+    private Long processingStartedAt;
+    private Long processingExpiresAt;
+    private String processingOwner;
 
     public CongestionEventItem() {
     }
@@ -241,5 +248,42 @@ public class CongestionEventItem {
 
     public void setImageUploadStatus(ImageUploadStatus imageUploadStatus) {
         this.imageUploadStatus = imageUploadStatus;
+    }
+
+    public Long getReceivedAt() {
+        return receivedAt;
+    }
+
+    public void setReceivedAt(Long receivedAt) {
+        this.receivedAt = receivedAt;
+    }
+
+    public Long getProcessingStartedAt() {
+        return processingStartedAt;
+    }
+
+    public void setProcessingStartedAt(Long processingStartedAt) {
+        this.processingStartedAt = processingStartedAt;
+    }
+
+    public Long getProcessingExpiresAt() {
+        return processingExpiresAt;
+    }
+
+    public void setProcessingExpiresAt(Long processingExpiresAt) {
+        this.processingExpiresAt = processingExpiresAt;
+    }
+
+    public String getProcessingOwner() {
+        return processingOwner;
+    }
+
+    public void setProcessingOwner(String processingOwner) {
+        this.processingOwner = processingOwner;
+    }
+
+    // 서버 시각 기준 판정에 쓸 시각. receivedAt이 없는 예전 데이터는 detectedAt으로 대신한다.
+    public long effectiveReceivedAt() {
+        return receivedAt != null ? receivedAt : detectedAt;
     }
 }

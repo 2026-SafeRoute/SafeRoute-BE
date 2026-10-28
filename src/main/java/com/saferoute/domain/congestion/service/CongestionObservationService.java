@@ -31,13 +31,17 @@ import com.saferoute.domain.training.repository.TrainingSessionRepository;
 import com.saferoute.global.api.error.CongestionErrorCode;
 import com.saferoute.global.api.error.TrainingErrorCode;
 import com.saferoute.global.api.exception.ApiException;
+import com.saferoute.infrastructure.s3.service.S3Service;
 import com.saferoute.infrastructure.websocket.service.TrainingEventPublisher;
+import io.micrometer.core.instrument.Metrics;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -54,10 +58,20 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 public class CongestionObservationService {
 
     static final Duration PROCESSING_LEASE = Duration.ofMinutes(1);
+    // Pi 시계(capturedAt)와 서버 시각 차이가 이보다 크면 경고한다. 최신 여부/stale 판정은 서버 수신 시각으로
+    // 하므로 동작은 계속되지만, 리포트의 구간 시각 등 Pi 시계를 그대로 쓰는 곳이 남아 있어 운영자가 알아야 한다.
+    static final long CLOCK_SKEW_WARN_THRESHOLD_MS = 10_000L;
+    // 관측값이 1초마다 오므로 같은 CCTV의 시계 경고는 이 간격으로만 남긴다.
+    private static final long CLOCK_SKEW_WARN_INTERVAL_MS = 60_000L;
+    // 관측값 1건의 서버 처리(수신~WebSocket 발행)가 이보다 오래 걸리면 단계별 소요를 WARN으로 남긴다.
+    // Pi가 1초마다 보내므로 이 값을 넘기 시작하면 Pi 응답 지연 -> 재전송으로 번진다.
+    static final long SLOW_OBSERVATION_WARN_MS = 500L;
 
     private static final String TRAINING_PREFIX = "training";
     private static final String MONITORING_DIRECTORY = "monitoring";
     private static final String JPEG_SUFFIX = ".jpg";
+
+    private final Map<String, Long> clockSkewLastWarnedAt = new ConcurrentHashMap<>();
 
     private final ObservationRepository observationRepository;
     private final ObservationCountRepository observationCountRepository;
@@ -71,9 +85,15 @@ public class CongestionObservationService {
     private final RouteRecalculationService routeRecalculationService;
     private final RouteDeviationService routeDeviationService;
     private final TrainingEventPublisher trainingEventPublisher;
+    private final S3Service s3Service;
 
     @Transactional
     public IdempotentSaveResult<ObservationItem> reportObservation(Cctv cctv, ReportObservationRequest request) {
+        // 서버 수신 시각. Pi 시계(capturedAt)는 저장만 하고, 최신 여부/stale/지연 판정은 전부 이 값으로 한다.
+        long receivedAt = Instant.now().toEpochMilli();
+        StageTimer timer = new StageTimer(cctv.getCode());
+        warnIfClockSkewed(cctv.getCode(), request.capturedAt(), receivedAt);
+
         Floor floor = cctv.getCustomNode().getFloor();
         UUID buildingId = floor.getBuilding().getId();
         TrainingSession session = trainingSessionRepository
@@ -118,13 +138,24 @@ public class CongestionObservationService {
                 monitoringImageKey,
                 request.configVersion()
         );
+        item.setReceivedAt(receivedAt);
+        timer.mark("validate");
 
         IdempotentSaveResult<ObservationItem> saveResult = observationRepository.saveIfAbsent(item);
         validateEventIdentity(saveResult.item(), request, session.getId());
-        updateLatestMonitoringCapture(session.getId(), cctv.getCode(), request.capturedAt(), monitoringImageKey);
+        timer.mark("save");
+        // 이미지가 없는 관측값(Pi가 그 초의 S3 업로드를 건너뛴 경우 등)은 카메라 화면의 최신 캡처 포인터를 건드리지
+        // 않는다 - 덮어쓰면 그 1초 때문에 마지막 정상 이미지가 사라져 다음 업로드 성공까지 빈 화면이 된다.
+        if (monitoringImageKey != null) {
+            updateLatestMonitoringCapture(
+                    session.getId(), cctv.getCode(), request.capturedAt(), receivedAt, monitoringImageKey);
+        }
+        timer.mark("capture");
         tryCreateAiAnalysisStartedEvent(session.getId(), cctv.getCode(), request.capturedAt());
-        routeDeviationService.evaluateObservation(cctv, saveResult.item());
+        // 경로 이탈 판정은 건물 내 유도등 수만큼 조회를 반복하므로 Pi 응답 경로에서 떼어낸다(전용 풀).
+        routeDeviationService.evaluateObservationAsync(buildingId, saveResult.item());
         tryIncrementObservationCount(saveResult, session.getId(), cctv.getCode());
+        timer.mark("count");
 
         String processingOwner = UUID.randomUUID().toString();
         long processingStartedAt = Instant.now().toEpochMilli();
@@ -134,13 +165,17 @@ public class CongestionObservationService {
                 processingStartedAt,
                 processingStartedAt + PROCESSING_LEASE.toMillis()
         );
+        timer.mark("claim");
         if (!claimed) {
+            timer.finish(saveResult.item().getEventId());
             return saveResult;
         }
 
         try {
             List<MapEdge> affectedEdges = resolveAffectedEdges(cctv.getId());
-            updateCurrentState(session.getId(), cctv.getCode(), request, saveResult.item());
+            timer.mark("edges");
+            updateCurrentState(session.getId(), cctv.getCode(), request, saveResult.item(), receivedAt);
+            timer.mark("state");
 
             CongestionLevel savedLevel = saveResult.item().getCongestionLevel();
             // 관측값은 주기적 스냅샷이라 STARTED/ENDED 같은 이벤트 구분이 없다 - 항상 LEVEL_UP으로 취급한다
@@ -156,14 +191,16 @@ public class CongestionObservationService {
                     // 관측값은 항상 LEVEL_UP이라 혼잡이 지속되면 관측 주기마다 재시도되므로 비동기로
                     // 떼어내도 안전하다 (#250) - ENDED는 이 서비스가 다루지 않는다
                     // (CongestionEventService 참고). MapEdge 엔티티가 아니라 id만 넘기고,
-                    // capturedAt을 함께 넘겨 너무 늦게 실행될 낡은 판단은 triggerAsync가 스스로
-                    // 건너뛰게 한다.
+                    // 적재 시각(서버 시각)을 함께 넘겨 실행기 큐에 너무 오래 밀린 낡은 판단은
+                    // triggerAsync가 스스로 건너뛰게 한다.
                     routeRecalculationService.triggerAsync(
                             session, affectedEdges.stream().map(MapEdge::getId).toList(), savedLevel,
-                            RecalculationTriggerType.LEVEL_UP, cctv.getCode(), density, request.capturedAt());
+                            RecalculationTriggerType.LEVEL_UP, cctv.getCode(), density, receivedAt);
                 }
             }
-            publishAndCompleteAfterCommit(session.getId(), affectedEdges, saveResult.item(), processingOwner);
+            // 큐가 꽉 차면 CallerRunsPolicy로 위 triggerAsync가 이 스레드에서 동기 실행되므로 그 시간도 여기 잡힌다.
+            timer.mark("trigger");
+            publishAndCompleteAfterCommit(session.getId(), affectedEdges, saveResult.item(), processingOwner, timer);
         } catch (ApiException exception) {
             failProcessing(saveResult.item().getEventId(), processingOwner, exception);
             throw exception;
@@ -192,7 +229,7 @@ public class CongestionObservationService {
     }
 
     private void updateCurrentState(
-            UUID sessionId, String cctvCode, ReportObservationRequest request, ObservationItem item
+            UUID sessionId, String cctvCode, ReportObservationRequest request, ObservationItem item, long receivedAt
     ) {
         CurrentCctvStateItem stateItem = CurrentCctvStateItem.create(
                 sessionId,
@@ -202,9 +239,10 @@ public class CongestionObservationService {
                 item.getDensity(),
                 item.getCongestionLevel(),
                 request.capturedAt(),
+                receivedAt,
                 request.configVersion()
         );
-        // 오래된 관측값이 최신 상태를 덮어쓰지 않도록 조건부 갱신 (lastDetectedAt 기준). 실패해도 관측값 저장 자체는 유지한다.
+        // 오래된 관측값이 최신 상태를 덮어쓰지 않도록 조건부 갱신 (서버 수신 시각 기준). 실패해도 관측값 저장 자체는 유지한다.
         if (!currentCctvStateRepository.updateIfLatest(stateItem)) {
             log.debug("더 최신 상태가 있어 CCTV 현재 상태 갱신을 건너뜀: cctvCode={}", cctvCode);
         }
@@ -214,17 +252,34 @@ public class CongestionObservationService {
             UUID sessionId,
             String cctvCode,
             long capturedAt,
+            long receivedAt,
             String monitoringImageKey
     ) {
         LatestMonitoringCaptureItem capture = LatestMonitoringCaptureItem.create(
                 sessionId,
                 cctvCode,
                 capturedAt,
+                receivedAt,
                 monitoringImageKey
         );
         if (!latestMonitoringCaptureRepository.updateIfLatest(capture)) {
             log.debug("더 최신 캡처가 있어 모니터링 포인터 갱신을 건너뜀: cctvCode={}", cctvCode);
         }
+    }
+
+    // Pi 시계가 서버와 많이 어긋나면 운영자가 알 수 있게 CCTV당 1분에 한 번만 경고하고 메트릭을 올린다.
+    private void warnIfClockSkewed(String cctvCode, long capturedAt, long receivedAt) {
+        long skewMs = receivedAt - capturedAt;
+        if (Math.abs(skewMs) <= CLOCK_SKEW_WARN_THRESHOLD_MS) {
+            return;
+        }
+        Metrics.counter("saferoute.observation.clock_skew", "cctvCode", cctvCode).increment();
+        Long lastWarnedAt = clockSkewLastWarnedAt.get(cctvCode);
+        if (lastWarnedAt != null && receivedAt - lastWarnedAt < CLOCK_SKEW_WARN_INTERVAL_MS) {
+            return;
+        }
+        clockSkewLastWarnedAt.put(cctvCode, receivedAt);
+        log.warn("Pi 시계가 서버와 어긋남(NTP 확인 필요): cctvCode={}, skewMs={} (양수면 Pi가 느림)", cctvCode, skewMs);
     }
 
     // 세션+CCTV 조합의 첫 유효 Observation 저장 시점에 AI_ANALYSIS_STARTED 일반 모니터링 이벤트를 생성한다.
@@ -276,8 +331,11 @@ public class CongestionObservationService {
     }
 
     // monitoringImageKey는 Pi가 임의로 채워 보내는 문자열이라, canonical 경로 형식과 요청 신원(세션/CCTV/캡처시각)이
-    // 일치하는지 검증한 뒤에만 저장한다. 다른 세션/CCTV의 S3 객체를 가리키는 변조된 key가 저장되는 것을 막기 위함.
-    // 빈 문자열은 이미지 없음을 뜻하는 null로 정규화해서 반환한다 - CongestionImageUrlService는 null만 이미지 없음으로 취급한다.
+    // 일치하고 S3에 실제 객체가 있을 때만 저장한다. 다른 세션/CCTV의 S3 객체를 가리키는 변조된 key가 저장되는
+    // 것과, 업로드가 실패/지연된 객체를 가리켜 화면에 깨진 이미지가 뜨는 것을 막기 위함.
+    // 어느 검사든 실패하면 예외 대신 null(이미지 없음)로 처리한다 - 이미지 key 하나 때문에 그 초의 인원/밀도
+    // 관측값까지 400으로 버리면 혼잡 데이터가 통째로 유실되기 때문이다(검증 실패는 WARN으로 남긴다).
+    // 빈 문자열도 null로 정규화한다 - CongestionImageUrlService는 null만 이미지 없음으로 취급한다.
     private String validateMonitoringImageKey(
             UUID sessionId, String cctvCode, long capturedAt, String monitoringImageKey
     ) {
@@ -285,6 +343,38 @@ public class CongestionObservationService {
             return null;
         }
 
+        try {
+            validateMonitoringImageKeyFormatAndIdentity(sessionId, cctvCode, capturedAt, monitoringImageKey);
+        } catch (ApiException exception) {
+            log.warn("monitoringImageKey 검증 실패로 이미지 없이 관측값만 저장: cctvCode={}, key={}, reason={}",
+                    cctvCode, monitoringImageKey, exception.getErrorCode());
+            Metrics.counter("saferoute.observation.image_rejected", "cctvCode", cctvCode).increment();
+            return null;
+        }
+        return verifyMonitoringImageExists(cctvCode, monitoringImageKey);
+    }
+
+    // S3에 객체가 없으면(Pi의 PUT 실패/지연, presigned URL 만료) 이미지 없음으로 저장한다. 존재 확인 자체가
+    // 실패(S3 장애 등)하면 key를 그대로 믿는다 - S3가 잠깐 흔들린다고 멀쩡한 이미지까지 화면에서 지우지 않기 위함.
+    private String verifyMonitoringImageExists(String cctvCode, String monitoringImageKey) {
+        try {
+            if (s3Service.objectExists(monitoringImageKey)) {
+                return monitoringImageKey;
+            }
+        } catch (RuntimeException exception) {
+            log.warn("S3 객체 존재 확인 실패, 이미지 key를 그대로 저장: cctvCode={}, key={}",
+                    cctvCode, monitoringImageKey, exception);
+            return monitoringImageKey;
+        }
+        log.warn("S3에 모니터링 이미지가 없어 이미지 없이 관측값만 저장(Pi 업로드 실패/지연 의심): cctvCode={}, key={}",
+                cctvCode, monitoringImageKey);
+        Metrics.counter("saferoute.observation.image_missing", "cctvCode", cctvCode).increment();
+        return null;
+    }
+
+    private void validateMonitoringImageKeyFormatAndIdentity(
+            UUID sessionId, String cctvCode, long capturedAt, String monitoringImageKey
+    ) {
         String[] segments = monitoringImageKey.split("/", -1);
         if (segments.length != 5
                 || !TRAINING_PREFIX.equals(segments[0])
@@ -303,7 +393,6 @@ public class CongestionObservationService {
         if (!sameIdentity) {
             throw new ApiException(CongestionErrorCode.MONITORING_IMAGE_IDENTITY_MISMATCH);
         }
-        return monitoringImageKey;
     }
 
     private UUID parseCanonicalUuid(String value) {
@@ -342,11 +431,15 @@ public class CongestionObservationService {
     }
 
     private void publishAndCompleteAfterCommit(
-            UUID sessionId, List<MapEdge> affectedEdges, ObservationItem item, String processingOwner
+            UUID sessionId, List<MapEdge> affectedEdges, ObservationItem item, String processingOwner,
+            StageTimer timer
     ) {
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
             publishCongestionUpdated(sessionId, affectedEdges, item);
+            timer.mark("publish");
             completeProcessing(item.getEventId(), processingOwner);
+            timer.mark("complete");
+            timer.finish(item.getEventId());
             return;
         }
 
@@ -354,8 +447,13 @@ public class CongestionObservationService {
             @Override
             public void afterCommit() {
                 try {
+                    // JPA 커밋 자체에 걸린 시간은 직전 mark 이후 ~ 여기까지로 잡힌다.
+                    timer.mark("commit");
                     publishCongestionUpdated(sessionId, affectedEdges, item);
+                    timer.mark("publish");
                     completeProcessing(item.getEventId(), processingOwner);
+                    timer.mark("complete");
+                    timer.finish(item.getEventId());
                 } catch (RuntimeException exception) {
                     failProcessing(item.getEventId(), processingOwner, exception);
                     throw new ApiException(CongestionErrorCode.EVENT_PROCESSING_FAILED, exception);
@@ -399,6 +497,41 @@ public class CongestionObservationService {
                 cause.addSuppressed(statusException);
             }
             log.error("혼잡 관측 처리 실패 상태 저장 중 오류: eventId={}", eventId, statusException);
+        }
+    }
+
+    // 관측값 1건의 서버 처리 단계별 소요 시간. 프론트가 보는 "capturedAt 대비 지연"이 Pi/S3 쪽(수신 전)인지
+    // BE 쪽(수신~발행)인지, BE 안에서는 어느 단계(DynamoDB 저장, 재탐색 동기 degrade, 커밋, 발행 등)인지
+    // 구분할 수 있게 단계별 ms를 메트릭(saferoute.observation.stage{stage=...})과 로그로 남긴다.
+    private static final class StageTimer {
+
+        private final String cctvCode;
+        private final long startedAtNanos = System.nanoTime();
+        private final StringBuilder breakdown = new StringBuilder();
+        private long lastMarkNanos = startedAtNanos;
+
+        private StageTimer(String cctvCode) {
+            this.cctvCode = cctvCode;
+        }
+
+        void mark(String stage) {
+            long now = System.nanoTime();
+            long elapsedMs = (now - lastMarkNanos) / 1_000_000L;
+            lastMarkNanos = now;
+            Metrics.timer("saferoute.observation.stage", "stage", stage).record(Duration.ofMillis(elapsedMs));
+            breakdown.append(stage).append('=').append(elapsedMs).append("ms ");
+        }
+
+        void finish(String eventId) {
+            long totalMs = (System.nanoTime() - startedAtNanos) / 1_000_000L;
+            Metrics.timer("saferoute.observation.total").record(Duration.ofMillis(totalMs));
+            if (totalMs > SLOW_OBSERVATION_WARN_MS) {
+                log.warn("관측값 처리가 느림: cctvCode={}, eventId={}, totalMs={}, stages=[{}]",
+                        cctvCode, eventId, totalMs, breakdown.toString().trim());
+            } else if (log.isDebugEnabled()) {
+                log.debug("관측값 처리 소요: cctvCode={}, eventId={}, totalMs={}, stages=[{}]",
+                        cctvCode, eventId, totalMs, breakdown.toString().trim());
+            }
         }
     }
 }

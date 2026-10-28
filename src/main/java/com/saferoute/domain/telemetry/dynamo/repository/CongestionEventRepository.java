@@ -211,6 +211,78 @@ public class CongestionEventRepository {
         return updateItem(eventId, "eventStatus", expectedStatus.name(), item -> item.setEventStatus(newStatus));
     }
 
+    // 처리 선점(lease). ObservationRepository.claimProcessing과 같은 규칙으로 RECEIVED/FAILED, 또는 lease가
+    // 만료된 PROCESSING만 선점할 수 있다. 처리 중 서버가 죽어도 lease가 끝나면 Pi 재전송이 다시 처리할 수 있다.
+    public boolean claimProcessing(
+            String eventId,
+            String processingOwner,
+            long processingStartedAt,
+            long processingExpiresAt
+    ) {
+        CongestionEventItem item = new CongestionEventItem();
+        item.setPk(CongestionEventItem.buildPk(eventId));
+        item.setSk("META");
+        item.setEventStatus(EventProcessingStatus.PROCESSING);
+        item.setProcessingOwner(processingOwner);
+        item.setProcessingStartedAt(processingStartedAt);
+        item.setProcessingExpiresAt(processingExpiresAt);
+
+        Expression condition = Expression.builder()
+                .expression("attribute_exists(#pk) AND (attribute_not_exists(#status)"
+                        + " OR #status = :received"
+                        + " OR #status = :failed"
+                        + " OR (#status = :processing AND #processingExpiresAt <= :now))")
+                .putExpressionName("#pk", "pk")
+                .putExpressionName("#status", "eventStatus")
+                .putExpressionName("#processingExpiresAt", "processingExpiresAt")
+                .putExpressionValue(":received", AttributeValue.fromS(EventProcessingStatus.RECEIVED.name()))
+                .putExpressionValue(":failed", AttributeValue.fromS(EventProcessingStatus.FAILED.name()))
+                .putExpressionValue(":processing", AttributeValue.fromS(EventProcessingStatus.PROCESSING.name()))
+                .putExpressionValue(":now", AttributeValue.fromN(Long.toString(processingStartedAt)))
+                .build();
+        return updateConditionally(item, condition);
+    }
+
+    // 선점한 요청(processingOwner)만 완료/실패 상태로 바꿀 수 있다 - lease가 만료돼 다른 요청이 다시 선점한 뒤
+    // 늦게 끝난 첫 요청이 상태를 덮어쓰지 않게 한다.
+    public boolean completeProcessing(String eventId, String processingOwner) {
+        return finishProcessing(eventId, processingOwner, EventProcessingStatus.PROCESSED);
+    }
+
+    public boolean failProcessing(String eventId, String processingOwner) {
+        return finishProcessing(eventId, processingOwner, EventProcessingStatus.FAILED);
+    }
+
+    private boolean finishProcessing(String eventId, String processingOwner, EventProcessingStatus status) {
+        CongestionEventItem item = new CongestionEventItem();
+        item.setPk(CongestionEventItem.buildPk(eventId));
+        item.setSk("META");
+        item.setEventStatus(status);
+        Expression condition = Expression.builder()
+                .expression("#status = :processing AND #processingOwner = :processingOwner")
+                .putExpressionName("#status", "eventStatus")
+                .putExpressionName("#processingOwner", "processingOwner")
+                .putExpressionValue(":processing", AttributeValue.fromS(EventProcessingStatus.PROCESSING.name()))
+                .putExpressionValue(":processingOwner", AttributeValue.fromS(processingOwner))
+                .build();
+        return updateConditionally(item, condition);
+    }
+
+    private boolean updateConditionally(CongestionEventItem item, Expression condition) {
+        UpdateItemEnhancedRequest<CongestionEventItem> request =
+                UpdateItemEnhancedRequest.builder(CongestionEventItem.class)
+                        .item(item)
+                        .ignoreNullsMode(IgnoreNullsMode.SCALAR_ONLY)
+                        .conditionExpression(condition)
+                        .build();
+        try {
+            table.updateItem(request);
+            return true;
+        } catch (ConditionalCheckFailedException exception) {
+            return false;
+        }
+    }
+
     public boolean updateImageUploadStatus(
             String eventId,
             ImageUploadStatus expectedStatus,

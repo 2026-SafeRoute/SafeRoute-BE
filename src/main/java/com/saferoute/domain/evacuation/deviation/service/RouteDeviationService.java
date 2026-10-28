@@ -24,6 +24,7 @@ import com.saferoute.domain.user.service.SchoolContextService;
 import com.saferoute.global.api.error.IoTLightErrorCode;
 import com.saferoute.global.api.error.TrainingErrorCode;
 import com.saferoute.global.api.exception.ApiException;
+import com.saferoute.global.config.AsyncConfig;
 import com.saferoute.infrastructure.websocket.service.TrainingEventPublisher;
 import java.util.HashSet;
 import java.util.List;
@@ -34,6 +35,7 @@ import java.util.TreeMap;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -123,9 +125,35 @@ public class RouteDeviationService {
     @Transactional
     public void evaluateObservation(Cctv cctv, ObservationItem observation) {
         UUID buildingId;
-        List<IoTLight> lights;
         try {
             buildingId = cctv.getCustomNode().getFloor().getBuilding().getId();
+        } catch (RuntimeException exception) {
+            log.error(
+                    "경로 이탈 판정 중 오류: sessionId={}, cctvCode={}",
+                    observation.getTrainingSessionId(), observation.getCctvCode(), exception
+            );
+            return;
+        }
+        evaluateObservation(buildingId, observation);
+    }
+
+    // evaluateObservation의 비동기 버전. Pi의 1초 관측 요청(CongestionObservationService.reportObservation)은
+    // DB 커넥션을 쥔 트랜잭션 안에서 DynamoDB 왕복을 여러 번 하는데, 거기에 건물 내 유도등 수만큼 반복되는
+    // 이 판정까지 얹으면 CCTV 수가 늘수록 Pi 응답이 늦어져 Pi 타임아웃 -> 재전송 -> 더 밀리는 악순환이 된다.
+    // 그래서 전용 풀(AsyncConfig.ROUTE_DEVIATION_EXECUTOR)로 떼어낸다. Cctv 엔티티는 원 요청의 영속성
+    // 컨텍스트에 묶여 있어 다른 스레드에서 지연 로딩하면 LazyInitializationException이 나므로, 필요한 값
+    // (buildingId)만 받는다. 판정이 관측 저장과 분리되어 늦게 실행되더라도 상태 전이는 서버 수신 시각 기준
+    // 조건부 쓰기라 순서가 뒤집히지 않는다(applyTransition 참고). self-invocation 주의: @Async는 외부 빈이
+    // 프록시를 통해 호출할 때만 적용된다.
+    @Async(AsyncConfig.ROUTE_DEVIATION_EXECUTOR)
+    @Transactional
+    public void evaluateObservationAsync(UUID buildingId, ObservationItem observation) {
+        evaluateObservation(buildingId, observation);
+    }
+
+    private void evaluateObservation(UUID buildingId, ObservationItem observation) {
+        List<IoTLight> lights;
+        try {
             lights = iotLightJpaRepository.findAllByCustomNode_Floor_Building_Id(buildingId);
         } catch (RuntimeException exception) {
             log.error(
@@ -167,9 +195,12 @@ public class RouteDeviationService {
             return;
         }
 
+        // 유도등 전환 이력(changedAt)은 서버 시각이므로 관측값도 서버 수신 시각으로 비교해야 같은 시계다 -
+        // Pi 시계(capturedAt)로 비교하면 Pi 시계가 틀린 만큼 "그때 어느 방향이었나"가 어긋난다.
+        long observedAt = observation.effectiveReceivedAt();
         List<LightDirectionEventItem> directionEvents = lightDirectionEventRepository
                 .findAllBySessionIdAndLightCode(observation.getTrainingSessionId(), light.getCode());
-        IoTLightDirection activeDirection = activeDirectionAt(directionEvents, observation.getCapturedAt());
+        IoTLightDirection activeDirection = activeDirectionAt(directionEvents, observedAt);
         if (activeDirection == null || activeDirection == IoTLightDirection.BOTH
                 || activeDirection == IoTLightDirection.OFF) {
             return;
@@ -182,22 +213,23 @@ public class RouteDeviationService {
         }
 
         boolean deviationSignal = observation.getAvgHeadcount() != null && observation.getAvgHeadcount() > 0;
-        applyTransition(observation.getTrainingSessionId(), light.getId(), cctvCode, deviationSignal,
-                observation.getCapturedAt());
+        applyTransition(observation.getTrainingSessionId(), light.getId(), cctvCode, deviationSignal, observedAt);
     }
 
-    // 유도등+세션별 상태를 읽어 다음 상태를 계산한 뒤, capturedAt 기준 조건부 쓰기로 원자적으로 반영한다.
+    // 유도등+세션별 상태를 읽어 다음 상태를 계산한 뒤, 서버 수신 시각 기준 조건부 쓰기로 원자적으로 반영한다
+    // (Pi 시계가 뒤로 보정되면 이후 관측값이 전부 "지연 도착"으로 무시되는 일을 막기 위해 capturedAt을 쓰지 않는다).
     // 조건부 쓰기가 성공하고 NORMAL -> DEVIATING 전환이 일어난 경우에만 이벤트를 생성한다.
     private void applyTransition(
-            String trainingSessionId, UUID lightId, String cctvCode, boolean deviationSignal, long capturedAt
+            String trainingSessionId, UUID lightId, String cctvCode, boolean deviationSignal, long observedAt
     ) {
         Optional<RouteDeviationStateItem> existing = routeDeviationStateRepository.find(trainingSessionId, lightId);
         RouteDeviationState currentState = existing.map(RouteDeviationStateItem::getState)
                 .orElse(RouteDeviationState.NORMAL);
         int currentZeroStreak = existing.map(RouteDeviationStateItem::getZeroStreak).orElse(0);
-        Long lastProcessedCapturedAt = existing.map(RouteDeviationStateItem::getLastProcessedCapturedAt)
+        // 저장 속성 이름은 lastProcessedCapturedAt이지만 값은 서버 수신 시각이다(위 주석 참고).
+        Long lastProcessedAt = existing.map(RouteDeviationStateItem::getLastProcessedCapturedAt)
                 .orElse(null);
-        if (lastProcessedCapturedAt != null && capturedAt <= lastProcessedCapturedAt) {
+        if (lastProcessedAt != null && observedAt <= lastProcessedAt) {
             return;
         }
 
@@ -219,10 +251,10 @@ public class RouteDeviationService {
         }
 
         RouteDeviationStateItem nextItem =
-                RouteDeviationStateItem.create(trainingSessionId, lightId, nextState, nextZeroStreak, capturedAt);
+                RouteDeviationStateItem.create(trainingSessionId, lightId, nextState, nextZeroStreak, observedAt);
         boolean written = routeDeviationStateRepository.saveIfNewer(nextItem);
         if (written && transitionedToDeviating) {
-            createRouteDeviationDetectedEvent(trainingSessionId, cctvCode, capturedAt);
+            createRouteDeviationDetectedEvent(trainingSessionId, cctvCode, observedAt);
         }
     }
 
@@ -270,7 +302,8 @@ public class RouteDeviationService {
                 }
                 WindowHeadcount window = windows.computeIfAbsent(observation.getWindowStart(),
                         key -> new WindowHeadcount());
-                window.capturedAt = observation.getCapturedAt();
+                // 방향 이력(changedAt)이 서버 시각이므로 관측값도 서버 수신 시각으로 맞춘다(evaluateLight와 동일).
+                window.capturedAt = observation.effectiveReceivedAt();
                 if (isLeft) {
                     window.left += observation.getAvgHeadcount();
                 } else {

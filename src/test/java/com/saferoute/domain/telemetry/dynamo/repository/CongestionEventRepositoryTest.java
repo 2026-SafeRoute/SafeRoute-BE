@@ -264,6 +264,58 @@ class CongestionEventRepositoryTest {
     }
 
     @Test
+    void RECEIVED_FAILED_또는_만료된_PROCESSING만_lease로_선점한다() {
+        ArgumentCaptor<UpdateItemEnhancedRequest<CongestionEventItem>> captor = updateCaptor();
+
+        boolean claimed = repository.claimProcessing("event-1", "worker-1", 10_000L, 40_000L);
+
+        assertThat(claimed).isTrue();
+        verify(table).updateItem(captor.capture());
+        UpdateItemEnhancedRequest<CongestionEventItem> request = captor.getValue();
+        assertThat(request.item().getEventStatus()).isEqualTo(EventProcessingStatus.PROCESSING);
+        assertThat(request.item().getProcessingOwner()).isEqualTo("worker-1");
+        assertThat(request.item().getProcessingStartedAt()).isEqualTo(10_000L);
+        assertThat(request.item().getProcessingExpiresAt()).isEqualTo(40_000L);
+        assertThat(request.conditionExpression().expression())
+                .startsWith("attribute_exists(#pk) AND (")
+                .contains("#status = :received", "#status = :failed", "#processingExpiresAt <= :now")
+                .endsWith(")");
+        assertThat(request.conditionExpression().expressionValues().get(":now").n()).isEqualTo("10000");
+    }
+
+    @Test
+    void 다른_요청의_lease가_살아_있으면_선점에_실패한다() {
+        doThrow(ConditionalCheckFailedException.builder().message("processing").build())
+                .when(table).updateItem(any(UpdateItemEnhancedRequest.class));
+
+        assertThat(repository.claimProcessing("event-1", "worker-2", 10_000L, 40_000L)).isFalse();
+    }
+
+    @Test
+    void 선점한_요청만_PROCESSED로_완료할_수_있다() {
+        ArgumentCaptor<UpdateItemEnhancedRequest<CongestionEventItem>> captor = updateCaptor();
+
+        assertThat(repository.completeProcessing("event-1", "worker-1")).isTrue();
+
+        verify(table).updateItem(captor.capture());
+        assertThat(captor.getValue().item().getEventStatus()).isEqualTo(EventProcessingStatus.PROCESSED);
+        assertThat(captor.getValue().conditionExpression().expression())
+                .isEqualTo("#status = :processing AND #processingOwner = :processingOwner");
+        assertThat(captor.getValue().conditionExpression().expressionValues().get(":processingOwner").s())
+                .isEqualTo("worker-1");
+    }
+
+    @Test
+    void 선점한_요청의_처리_실패를_FAILED로_기록한다() {
+        ArgumentCaptor<UpdateItemEnhancedRequest<CongestionEventItem>> captor = updateCaptor();
+
+        assertThat(repository.failProcessing("event-1", "worker-1")).isTrue();
+
+        verify(table).updateItem(captor.capture());
+        assertThat(captor.getValue().item().getEventStatus()).isEqualTo(EventProcessingStatus.FAILED);
+    }
+
+    @Test
     void FAILED_이벤트를_PROCESSING으로_재처리할_수_있다() {
         boolean updated = repository.updateEventStatus(
                 "event-1", EventProcessingStatus.FAILED, EventProcessingStatus.PROCESSING

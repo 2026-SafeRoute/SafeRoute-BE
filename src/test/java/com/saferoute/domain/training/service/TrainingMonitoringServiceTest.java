@@ -116,6 +116,82 @@ class TrainingMonitoringServiceTest {
                 congestionConfigService
         );
         given(schoolContextService.getSchoolName(EMAIL)).willReturn(SCHOOL_NAME);
+        // 카메라 목록도 stale 판정에 stateStaleAfterSec를 쓴다 - 필요한 테스트는 개별 설정으로 덮어쓴다.
+        org.mockito.Mockito.lenient().when(congestionConfigService.getConfig())
+                .thenReturn(CongestionConfig.createDefault());
+    }
+
+    @Test
+    void 카메라_목록은_서버_수신_시각이_stateStaleAfterSec_안이면_stale이_아니다() {
+        stubSession(TrainingStatus.RUNNING);
+        Cctv cctv = cctv(3);
+        String key = "training/session/monitoring/CCTV_001/1787722095000.jpg";
+        long receivedAt = Instant.now().toEpochMilli() - 1_000L;
+        // capturedAt(Pi 시계)은 일부러 한참 과거로 둔다 - stale 판정은 Pi 시계가 아니라 서버 수신 시각을 써야 한다.
+        LatestMonitoringCaptureItem capture = LatestMonitoringCaptureItem.create(
+                SESSION_ID, "CCTV_001", 1_787_722_095_000L, receivedAt, key);
+        given(cctvJpaRepository
+                .findAllByEnabledTrueAndCustomNode_Floor_Building_IdOrderByCustomNode_Floor_FloorNumAscCodeAsc(
+                        BUILDING_ID))
+                .willReturn(List.of(cctv));
+        given(latestMonitoringCaptureRepository.findAllBySessionId(SESSION_ID.toString()))
+                .willReturn(List.of(capture));
+        given(s3PresignedUrlService.createGetUrl(key))
+                .willReturn(new PresignedGetUrl("https://example.com/frame.jpg", Instant.parse("2026-08-27T01:00:00Z")));
+
+        MonitoringCameraResponse camera = service.getCameras(SESSION_ID, EMAIL).cameras().get(0);
+
+        assertThat(camera.stale()).isFalse();
+        assertThat(camera.receivedAt()).isEqualTo(receivedAt);
+        assertThat(camera.capturedAt()).isEqualTo(1_787_722_095_000L);
+    }
+
+    @Test
+    void 카메라_목록은_서버_수신_시각이_stateStaleAfterSec를_넘기면_stale이다() {
+        stubSession(TrainingStatus.RUNNING);
+        Cctv cctv = cctv(3);
+        String key = "training/session/monitoring/CCTV_001/1787722095000.jpg";
+        // 기본 설정 stateStaleAfterSec=15초. 서버 수신 시각을 20초 전으로 둬 Pi가 끊긴 상황을 재현한다.
+        long receivedAt = Instant.now().toEpochMilli() - 20_000L;
+        LatestMonitoringCaptureItem capture = LatestMonitoringCaptureItem.create(
+                SESSION_ID, "CCTV_001", receivedAt, receivedAt, key);
+        given(cctvJpaRepository
+                .findAllByEnabledTrueAndCustomNode_Floor_Building_IdOrderByCustomNode_Floor_FloorNumAscCodeAsc(
+                        BUILDING_ID))
+                .willReturn(List.of(cctv));
+        given(latestMonitoringCaptureRepository.findAllBySessionId(SESSION_ID.toString()))
+                .willReturn(List.of(capture));
+        given(s3PresignedUrlService.createGetUrl(key))
+                .willReturn(new PresignedGetUrl("https://example.com/frame.jpg", Instant.parse("2026-08-27T01:00:00Z")));
+
+        MonitoringCameraResponse camera = service.getCameras(SESSION_ID, EMAIL).cameras().get(0);
+
+        assertThat(camera.stale()).isTrue();
+        // 마지막 이미지는 그대로 준다 - 프론트가 "끊김/오래된 이미지"로 표시할 수 있게.
+        assertThat(camera.thumbnailUrl()).isEqualTo("https://example.com/frame.jpg");
+    }
+
+    @Test
+    void 현재_상태의_stale_판정은_Pi_시계가_아니라_서버_수신_시각을_쓴다() {
+        stubSession(TrainingStatus.RUNNING);
+        Cctv cctv = cctv(3);
+        // Pi 시계(lastDetectedAt)는 1분 전이지만 서버는 방금 받았다 - Pi 시계가 틀린 것이지 끊긴 게 아니다.
+        long lastDetectedAt = Instant.now().toEpochMilli() - 60_000L;
+        long lastReceivedAt = Instant.now().toEpochMilli() - 1_000L;
+        CurrentCctvStateItem state = CurrentCctvStateItem.create(
+                SESSION_ID, "CCTV_001", 8.6, 12, 0.42, CongestionLevel.CROWDED, lastDetectedAt, lastReceivedAt, 3L
+        );
+        given(cctvJpaRepository
+                .findAllByEnabledTrueAndCustomNode_Floor_Building_IdOrderByCustomNode_Floor_FloorNumAscCodeAsc(
+                        BUILDING_ID))
+                .willReturn(List.of(cctv));
+        given(currentCctvStateRepository.findAllBySessionId(SESSION_ID.toString()))
+                .willReturn(List.of(state));
+
+        CurrentCctvStateResponse response = service.getCurrentStates(SESSION_ID, EMAIL).states().get(0);
+
+        assertThat(response.stale()).isFalse();
+        assertThat(response.lastDetectedAt()).isEqualTo(lastDetectedAt);
     }
 
     @Test

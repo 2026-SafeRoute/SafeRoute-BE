@@ -47,7 +47,24 @@ class LatestMonitoringCaptureRepositoryTest {
     }
 
     @Test
-    void 최신_캡처면_조건부_갱신한다() {
+    void 서버_수신_시각이_있으면_receivedAt_기준으로_조건부_갱신한다() {
+        LatestMonitoringCaptureItem incoming = LatestMonitoringCaptureItem.create(
+                SESSION_ID, "CCTV_001", 2_000L, 7_000L, "training/session/monitoring/CCTV_001/frame.jpg");
+        ArgumentCaptor<PutItemEnhancedRequest<LatestMonitoringCaptureItem>> captor = putCaptor();
+
+        assertThat(repository.updateIfLatest(incoming)).isTrue();
+
+        verify(table).putItem(captor.capture());
+        assertThat(captor.getValue().conditionExpression().expression())
+                .isEqualTo("attribute_not_exists(#timestamp) OR :incomingTimestamp >= #timestamp");
+        assertThat(captor.getValue().conditionExpression().expressionNames())
+                .containsEntry("#timestamp", "receivedAt");
+        assertThat(captor.getValue().conditionExpression().expressionValues()
+                .get(":incomingTimestamp").n()).isEqualTo("7000");
+    }
+
+    @Test
+    void 서버_수신_시각이_없는_예전_계약은_capturedAt_기준으로_조건부_갱신한다() {
         LatestMonitoringCaptureItem incoming = item("CCTV_001", 2_000L);
         ArgumentCaptor<PutItemEnhancedRequest<LatestMonitoringCaptureItem>> captor = putCaptor();
 
@@ -55,9 +72,11 @@ class LatestMonitoringCaptureRepositoryTest {
 
         verify(table).putItem(captor.capture());
         assertThat(captor.getValue().conditionExpression().expression())
-                .isEqualTo("attribute_not_exists(#capturedAt) OR :incomingCapturedAt >= #capturedAt");
+                .isEqualTo("attribute_not_exists(#timestamp) OR :incomingTimestamp >= #timestamp");
+        assertThat(captor.getValue().conditionExpression().expressionNames())
+                .containsEntry("#timestamp", "capturedAt");
         assertThat(captor.getValue().conditionExpression().expressionValues()
-                .get(":incomingCapturedAt").n()).isEqualTo("2000");
+                .get(":incomingTimestamp").n()).isEqualTo("2000");
     }
 
     @Test

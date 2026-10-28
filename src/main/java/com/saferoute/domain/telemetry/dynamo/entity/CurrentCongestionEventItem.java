@@ -21,6 +21,8 @@ public class CurrentCongestionEventItem {
     private CongestionEventType eventType;
     private CongestionLevel congestionLevel;
     private Long detectedAt;
+    // BE가 이 이벤트를 받은 서버 시각(detectedAt은 Pi 시계). stale 판정은 이 값을 기준으로 한다.
+    private Long receivedAt;
 
     public CurrentCongestionEventItem() {
     }
@@ -33,6 +35,7 @@ public class CurrentCongestionEventItem {
         item.eventType = event.getEventType();
         item.congestionLevel = event.getCongestionLevel();
         item.detectedAt = event.getDetectedAt();
+        item.receivedAt = event.getReceivedAt();
         item.pk = buildPk(item.trainingSessionId);
         item.sk = buildSk(item.cctvCode);
         return item;
@@ -71,4 +74,12 @@ public class CurrentCongestionEventItem {
 
     public Long getDetectedAt() { return detectedAt; }
     public void setDetectedAt(Long detectedAt) { this.detectedAt = detectedAt; }
+
+    public Long getReceivedAt() { return receivedAt; }
+    public void setReceivedAt(Long receivedAt) { this.receivedAt = receivedAt; }
+
+    // 서버 시각 기준 판정에 쓸 시각. receivedAt이 없는 예전 데이터는 detectedAt으로 대신한다.
+    public Long effectiveReceivedAt() {
+        return receivedAt != null ? receivedAt : detectedAt;
+    }
 }

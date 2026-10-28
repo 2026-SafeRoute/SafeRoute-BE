@@ -26,6 +26,8 @@ import com.saferoute.global.api.error.CongestionErrorCode;
 import com.saferoute.global.api.error.TrainingErrorCode;
 import com.saferoute.global.api.exception.ApiException;
 import com.saferoute.infrastructure.websocket.service.TrainingEventPublisher;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -37,14 +39,17 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 // Pi가 혼잡 진입/상승/종료를 감지한 즉시 보내는 이벤트를 받아 BE가 직접 밀도·혼잡 단계를
-// 계산하고 저장한다. 멱등 저장/처리 상태 전이/after-commit 발행 구조는 CongestionObservationService
-// (주기 관측값)와 동일한 패턴을 쓰되, CongestionEventRepository는 처리 소유자(lease) 없이
-// RECEIVED/PROCESSING/PROCESSED/FAILED 상태만으로 동시 처리를 막는다.
+// 계산하고 저장한다. 멱등 저장/처리 lease/after-commit 발행 구조는 CongestionObservationService
+// (주기 관측값)와 동일한 패턴을 쓴다.
 @Slf4j
 @Service
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
 public class CongestionEventService {
+
+    // 처리 중 서버가 죽으면 이 시간 뒤부터 Pi 재전송이 다시 선점해 처리할 수 있다. 즉시 이벤트는 관측값과 달리
+    // 1회성이라(특히 ENDED) 영원히 PROCESSING에 갇히면 복구 제안이 사라지므로 관측값(1분)보다 짧게 잡는다.
+    static final Duration PROCESSING_LEASE = Duration.ofSeconds(30);
 
     private final CongestionEventRepository congestionEventRepository;
     private final CurrentCongestionEventRepository currentCongestionEventRepository;
@@ -59,6 +64,8 @@ public class CongestionEventService {
     public IdempotentSaveResult<CongestionEventItem> reportCongestionEvent(
             Cctv cctv, ReportCongestionEventRequest request
     ) {
+        // 서버 수신 시각. Pi 시계(detectedAt)는 저장만 하고 stale/지연 판정은 이 값으로 한다.
+        long receivedAt = Instant.now().toEpochMilli();
         Floor floor = cctv.getCustomNode().getFloor();
         UUID buildingId = floor.getBuilding().getId();
         TrainingSession session = trainingSessionRepository
@@ -90,6 +97,7 @@ public class CongestionEventService {
                 request.configVersion(),
                 null
         );
+        item.setReceivedAt(receivedAt);
 
         IdempotentSaveResult<CongestionEventItem> saveResult = congestionEventRepository.saveReceivedIfAbsent(item);
         validateEventIdentity(saveResult.item(), request, session.getId());
@@ -98,9 +106,17 @@ public class CongestionEventService {
             // 이미 후속 처리까지 끝난 이벤트의 재전송 - 있는 그대로 반환하고 다시 처리하지 않는다.
             return saveResult;
         }
-        if (!claimProcessing(saveResult.item())) {
-            // 다른 요청이 이미 처리 중(PROCESSING)이거나 상태 전이 규칙상 지금은 시작할 수 없는 경우.
-            // 재시도를 유도하기 위해 저장된 상태를 그대로 반환한다.
+        String processingOwner = UUID.randomUUID().toString();
+        long processingStartedAt = Instant.now().toEpochMilli();
+        boolean claimed = congestionEventRepository.claimProcessing(
+                saveResult.item().getEventId(),
+                processingOwner,
+                processingStartedAt,
+                processingStartedAt + PROCESSING_LEASE.toMillis()
+        );
+        if (!claimed) {
+            // 다른 요청이 이미 처리 중(lease가 살아 있는 PROCESSING)인 경우. 저장된 상태를 그대로 반환한다 -
+            // Pi는 응답의 eventStatus가 PROCESSED가 아니면 아직 처리가 끝나지 않은 것으로 보면 된다.
             return saveResult;
         }
 
@@ -112,13 +128,20 @@ public class CongestionEventService {
             // 계산(CurrentCongestionWeightProvider)이 이를 강한 일관성으로 읽어 함께 반영한다(#293).
             // 재탐색 트리거보다 먼저 기록해야 이 이벤트로 시작되는 재계산과 그 직후 다른 CCTV의
             // 재계산이 모두 이 이벤트를 본다.
-            currentCongestionEventRepository.updateIfLatest(CurrentCongestionEventItem.from(saveResult.item()));
+            boolean latest = currentCongestionEventRepository.updateIfLatest(
+                    CurrentCongestionEventItem.from(saveResult.item()));
 
             CongestionLevel savedLevel = saveResult.item().getCongestionLevel();
             RecalculationTriggerType triggerType = mapTriggerType(saveResult.item().getEventType());
             // ENDED는 레벨이 NORMAL이라 requiresRouteRecalculation()이 false지만, 정상 경로로의
             // 복구 후보를 제시해야 하므로(RouteRecalculationService.trigger 참고) 별도로 포함한다.
-            if (savedLevel.requiresRouteRecalculation() || triggerType == RecalculationTriggerType.ENDED) {
+            if (!latest) {
+                // 네트워크 지연으로 늦게 도착한 옛 이벤트(이 CCTV에 더 새로운 이벤트가 이미 기록됨). 이대로
+                // 재탐색을 돌리면 끝난 혼잡 기준으로 유효한 PENDING을 취소하거나(옛 ENDED) 이미 끝난 혼잡의
+                // 우회를 다시 제안하므로(옛 STARTED), 저장·발행만 하고 재탐색은 건너뛴다.
+                log.info("더 새로운 즉시 이벤트가 이미 있어 재탐색을 건너뜀: sessionId={}, cctvCode={}, eventType={}",
+                        session.getId(), cctv.getCode(), saveResult.item().getEventType());
+            } else if (savedLevel.requiresRouteRecalculation() || triggerType == RecalculationTriggerType.ENDED) {
                 if (affectedEdges.isEmpty()) {
                     log.warn(
                             "재계산 기준을 충족했지만 감시 중인 MapEdge가 없어 재계산을 건너뜀: "
@@ -136,19 +159,19 @@ public class CongestionEventService {
                 } else {
                     // STARTED/LEVEL_UP은 혼잡이 지속되는 동안 다음 관측값이 관측 주기마다 재시도해주므로
                     // 비동기로 떼어내도 안전하다 (#250). MapEdge 엔티티가 아니라 id만 넘기고,
-                    // detectedAt을 함께 넘겨 너무 늦게 실행될 낡은 판단은 triggerAsync가 스스로
-                    // 건너뛰게 한다.
+                    // 적재 시각(서버 시각)을 함께 넘겨 실행기 큐에 너무 오래 밀린 낡은 판단은
+                    // triggerAsync가 스스로 건너뛰게 한다.
                     routeRecalculationService.triggerAsync(
                             session, affectedEdges.stream().map(MapEdge::getId).toList(), savedLevel,
-                            triggerType, cctv.getCode(), density, request.detectedAt());
+                            triggerType, cctv.getCode(), density, receivedAt);
                 }
             }
-            publishAndCompleteAfterCommit(session.getId(), affectedEdges, saveResult.item());
+            publishAndCompleteAfterCommit(session.getId(), affectedEdges, saveResult.item(), processingOwner);
         } catch (ApiException exception) {
-            failProcessing(saveResult.item().getEventId());
+            failProcessing(saveResult.item().getEventId(), processingOwner);
             throw exception;
         } catch (RuntimeException exception) {
-            failProcessing(saveResult.item().getEventId());
+            failProcessing(saveResult.item().getEventId(), processingOwner);
             throw new ApiException(CongestionErrorCode.EVENT_PROCESSING_FAILED, exception);
         }
         return saveResult;
@@ -179,15 +202,6 @@ public class CongestionEventService {
         };
     }
 
-    private boolean claimProcessing(CongestionEventItem item) {
-        EventProcessingStatus current = item.getEventStatus();
-        if (current != EventProcessingStatus.RECEIVED && current != EventProcessingStatus.FAILED) {
-            return false;
-        }
-        return congestionEventRepository.updateEventStatus(
-                item.getEventId(), current, EventProcessingStatus.PROCESSING);
-    }
-
     private void validateEventIdentity(
             CongestionEventItem item, ReportCongestionEventRequest request, UUID sessionId
     ) {
@@ -199,11 +213,11 @@ public class CongestionEventService {
     }
 
     private void publishAndCompleteAfterCommit(
-            UUID sessionId, List<MapEdge> affectedEdges, CongestionEventItem item
+            UUID sessionId, List<MapEdge> affectedEdges, CongestionEventItem item, String processingOwner
     ) {
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
             publishCongestionEventReceived(sessionId, affectedEdges, item);
-            completeProcessing(item.getEventId());
+            completeProcessing(item.getEventId(), processingOwner);
             return;
         }
 
@@ -212,9 +226,9 @@ public class CongestionEventService {
             public void afterCommit() {
                 try {
                     publishCongestionEventReceived(sessionId, affectedEdges, item);
-                    completeProcessing(item.getEventId());
+                    completeProcessing(item.getEventId(), processingOwner);
                 } catch (RuntimeException exception) {
-                    failProcessing(item.getEventId());
+                    failProcessing(item.getEventId(), processingOwner);
                     throw new ApiException(CongestionErrorCode.EVENT_PROCESSING_FAILED, exception);
                 }
             }
@@ -222,7 +236,7 @@ public class CongestionEventService {
             @Override
             public void afterCompletion(int status) {
                 if (status != TransactionSynchronization.STATUS_COMMITTED) {
-                    failProcessing(item.getEventId());
+                    failProcessing(item.getEventId(), processingOwner);
                 }
             }
         });
@@ -236,10 +250,9 @@ public class CongestionEventService {
         trainingEventPublisher.publishCongestionEventReceived(sessionId, affectedEdgeIds, item);
     }
 
-    private void completeProcessing(String eventId) {
+    private void completeProcessing(String eventId, String processingOwner) {
         try {
-            if (!congestionEventRepository.updateEventStatus(
-                    eventId, EventProcessingStatus.PROCESSING, EventProcessingStatus.PROCESSED)) {
+            if (!congestionEventRepository.completeProcessing(eventId, processingOwner)) {
                 log.warn("혼잡 이벤트 처리 완료 상태 갱신 실패: eventId={}", eventId);
             }
         } catch (RuntimeException exception) {
@@ -247,10 +260,9 @@ public class CongestionEventService {
         }
     }
 
-    private void failProcessing(String eventId) {
+    private void failProcessing(String eventId, String processingOwner) {
         try {
-            if (!congestionEventRepository.updateEventStatus(
-                    eventId, EventProcessingStatus.PROCESSING, EventProcessingStatus.FAILED)) {
+            if (!congestionEventRepository.failProcessing(eventId, processingOwner)) {
                 log.warn("혼잡 이벤트 처리 실패 상태 갱신 실패: eventId={}", eventId);
             }
         } catch (RuntimeException statusException) {

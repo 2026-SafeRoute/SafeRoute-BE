@@ -18,9 +18,27 @@ public class CurrentCctvStateItem {
     private Double density;
     private CongestionLevel congestionLevel;
     private Long lastDetectedAt;
+    // 마지막 관측값을 BE가 받은 서버 시각. lastDetectedAt(Pi 시계)과 달리 stale 판정/최신 여부 비교의
+    // 기준으로 쓴다. 예전 데이터에는 없을 수 있다(null) - 그때는 lastDetectedAt으로 대신한다.
+    private Long lastReceivedAt;
     private Long configVersion;
 
     public CurrentCctvStateItem() {
+    }
+
+    // lastReceivedAt 없이 만드는 예전 계약(테스트/기존 데이터 호환용).
+    public static CurrentCctvStateItem create(
+            UUID trainingSessionId,
+            String cctvCode,
+            Double avgHeadcount,
+            Integer peakHeadcount,
+            Double density,
+            CongestionLevel congestionLevel,
+            long lastDetectedAt,
+            long configVersion
+    ) {
+        return create(trainingSessionId, cctvCode, avgHeadcount, peakHeadcount, density, congestionLevel,
+                lastDetectedAt, null, configVersion);
     }
 
     // 기준 데이터는 주기 Observation으로 통일한다 - 즉시 혼잡 이벤트(CongestionEventService)는
@@ -33,9 +51,11 @@ public class CurrentCctvStateItem {
             Double density,
             CongestionLevel congestionLevel,
             long lastDetectedAt,
+            Long lastReceivedAt,
             long configVersion
     ) {
         CurrentCctvStateItem item = new CurrentCctvStateItem();
+        item.lastReceivedAt = lastReceivedAt;
         item.trainingSessionId = trainingSessionId.toString();
         item.cctvCode = cctvCode;
         item.avgHeadcount = avgHeadcount;
@@ -85,6 +105,15 @@ public class CurrentCctvStateItem {
 
     public Long getLastDetectedAt() { return lastDetectedAt; }
     public void setLastDetectedAt(Long lastDetectedAt) { this.lastDetectedAt = lastDetectedAt; }
+
+    public Long getLastReceivedAt() { return lastReceivedAt; }
+    public void setLastReceivedAt(Long lastReceivedAt) { this.lastReceivedAt = lastReceivedAt; }
+
+    // 서버 시각 기준 stale 판정에 쓸 시각. lastReceivedAt이 없는 예전 데이터는 lastDetectedAt으로 대신한다.
+    // (get으로 시작하면 DynamoDB Enhanced Client가 속성으로 오인하므로 이름을 달리 둔다.)
+    public Long effectiveReceivedAt() {
+        return lastReceivedAt != null ? lastReceivedAt : lastDetectedAt;
+    }
 
     public Long getConfigVersion() { return configVersion; }
     public void setConfigVersion(Long configVersion) { this.configVersion = configVersion; }

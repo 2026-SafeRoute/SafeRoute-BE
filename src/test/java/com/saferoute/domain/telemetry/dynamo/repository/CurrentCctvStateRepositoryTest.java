@@ -46,7 +46,24 @@ class CurrentCctvStateRepositoryTest {
     }
 
     @Test
-    void 최신_timestamp면_현재_상태를_조건부_갱신한다() {
+    void 서버_수신_시각이_있으면_lastReceivedAt_기준으로_현재_상태를_조건부_갱신한다() {
+        CurrentCctvStateItem incoming = CurrentCctvStateItem.create(
+                SESSION_ID, "CCTV_001", 8.6, 12, 4.5, CongestionLevel.CROWDED, 2_000L, 7_000L, 1L);
+        ArgumentCaptor<PutItemEnhancedRequest<CurrentCctvStateItem>> captor = putCaptor();
+
+        assertThat(repository.updateIfLatest(incoming)).isTrue();
+
+        verify(table).putItem(captor.capture());
+        assertThat(captor.getValue().conditionExpression().expression())
+                .isEqualTo("attribute_not_exists(#timestamp) OR :incomingTimestamp >= #timestamp");
+        assertThat(captor.getValue().conditionExpression().expressionNames())
+                .containsEntry("#timestamp", "lastReceivedAt");
+        assertThat(captor.getValue().conditionExpression().expressionValues().get(":incomingTimestamp").n())
+                .isEqualTo("7000");
+    }
+
+    @Test
+    void 서버_수신_시각이_없는_예전_계약은_lastDetectedAt_기준으로_현재_상태를_조건부_갱신한다() {
         CurrentCctvStateItem incoming = item("CCTV_001", 2_000L);
         ArgumentCaptor<PutItemEnhancedRequest<CurrentCctvStateItem>> captor = putCaptor();
 
@@ -54,7 +71,9 @@ class CurrentCctvStateRepositoryTest {
 
         verify(table).putItem(captor.capture());
         assertThat(captor.getValue().conditionExpression().expression())
-                .isEqualTo("attribute_not_exists(#lastDetectedAt) OR :incomingTimestamp >= #lastDetectedAt");
+                .isEqualTo("attribute_not_exists(#timestamp) OR :incomingTimestamp >= #timestamp");
+        assertThat(captor.getValue().conditionExpression().expressionNames())
+                .containsEntry("#timestamp", "lastDetectedAt");
         assertThat(captor.getValue().conditionExpression().expressionValues().get(":incomingTimestamp").n())
                 .isEqualTo("2000");
     }
