@@ -166,7 +166,7 @@ class RouteRecalculationServiceTest {
     // 화재 재탐색 관련 테스트는 활성(직행) 경로가 triggerEdge의 두 노드를 연속으로 지나도록
     // 세팅해야 그 다음 단계(우회 경로 계산)까지 도달한다.
     private void givenDirectRouteCrossesTriggerEdge() {
-        given(evacuationRouteService.findShortestRoute(floorId, startNodeId))
+        given(evacuationRouteService.findShortestRoute(floorId, startNodeId, Set.of()))
                 .willReturn(new EvacuationRoute(List.of(triggerEdgeFromNode, triggerEdgeToNode), 8.0));
     }
 
@@ -196,7 +196,7 @@ class RouteRecalculationServiceTest {
     }
 
     private void givenNoDirectRoute() {
-        given(evacuationRouteService.findShortestRoute(floorId, startNodeId))
+        given(evacuationRouteService.findShortestRoute(floorId, startNodeId, Set.of()))
                 .willThrow(new ApiException(EvacuationErrorCode.EVACUATION_ROUTE_NOT_FOUND));
     }
 
@@ -304,7 +304,7 @@ class RouteRecalculationServiceTest {
                 session.getId(), RecalculationStatus.PENDING)).willReturn(List.of(firePending));
         givenNoApprovedHistory();
         UUID sameNode = UUID.randomUUID();
-        given(evacuationRouteService.findShortestRoute(floorId, startNodeId)).willReturn(routeOf(8.0, sameNode));
+        given(evacuationRouteService.findShortestRoute(floorId, startNodeId, Set.of())).willReturn(routeOf(8.0, sameNode));
         givenEndedCandidate(routeOf(8.0, sameNode));
 
         routeRecalculationService.trigger(session, List.of(triggerEdge), CongestionLevel.NORMAL,
@@ -661,7 +661,7 @@ class RouteRecalculationServiceTest {
         givenNoExistingPending();
         givenNoApprovedHistory();
         UUID sameNode = UUID.randomUUID();
-        given(evacuationRouteService.findShortestRoute(floorId, startNodeId)).willReturn(routeOf(8.0, sameNode));
+        given(evacuationRouteService.findShortestRoute(floorId, startNodeId, Set.of())).willReturn(routeOf(8.0, sameNode));
         givenEndedCandidate(routeOf(8.0, sameNode));
 
         routeRecalculationService.trigger(session, List.of(triggerEdge), CongestionLevel.NORMAL,
@@ -783,7 +783,7 @@ class RouteRecalculationServiceTest {
         given(routeRecalculationRepository.findAllByTrainingSession_IdAndStatus(
                 session.getId(), RecalculationStatus.PENDING)).willReturn(List.of(stillValid));
         givenNoApprovedHistory();
-        given(evacuationRouteService.findShortestRoute(floorId, startNodeId))
+        given(evacuationRouteService.findShortestRoute(floorId, startNodeId, Set.of()))
                 .willReturn(routeOf(8.0, UUID.randomUUID()));
         givenEndedCandidate(routeOf(12.5, candidateNode));
 
@@ -834,12 +834,9 @@ class RouteRecalculationServiceTest {
     @Test
     @DisplayName("화재 확산이면 화재 구간 엣지는 모두 제외하고, 현재 혼잡 엣지는 가중치로 반영해 우회 경로를 계산한다")
     void triggerForFireSpread_excludesAllAffectedEdges() {
-        // [설계 결정 가드 - 이슈 #247] 승인된 경로가 없어 resolveActiveRoute가 화재를 모른 채
-        // (givenDirectRouteCrossesTriggerEdge) previous를 계산해도, candidate와 달라 PENDING이
-        // 정상적으로 생성되는지 고정한다. resolveActiveRoute를 getCurrentRoute처럼 화재 인지하게
-        // "고치면" candidate와 previous가 항상 같아져 아래 save 검증이 깨진다 - 그게 의도다
-        // (resolveActiveRoute의 주석 참고: 승인 경로 없는 세션에서 PENDING이 영원히 안 생기는
-        // 회귀를 막기 위해 이 부정확함을 의도적으로 유지 중).
+        // [가드 - 이슈 #247] 승인된 경로가 없으면 resolveActiveRoute는 최초 경로(발화점만 제외)를
+        // previous로 쓴다. 그 경로가 새로 번진 화재 엣지를 지나면 candidate와 달라 PENDING이
+        // 정상적으로 생성되는지 고정한다(현재 화재 전체를 previous에서 빼면 둘이 항상 같아진다).
         givenNoExistingPending();
         givenNoApprovedHistory();
         givenDirectRouteCrossesTriggerEdge();
@@ -897,6 +894,62 @@ class RouteRecalculationServiceTest {
         assertThat(multipliersCaptor.getValue()).isEmpty();
         verify(routeRecalculationRepository, times(1)).save(any());
         verify(trainingEventPublisher, times(1)).publishRouteRecalculationRequestedAfterCommit(saved);
+    }
+
+    @Test
+    @DisplayName("승인 이력이 없으면 화재 확산 판단 기준 경로는 최초 발화점 구간만 뺀 최초 안내 경로다")
+    void triggerForFireSpread_activeRouteWithoutApproval_excludesOnlyOriginEdges() {
+        givenNoExistingPending();
+        givenNoApprovedHistory();
+        UUID scenarioId = UUID.randomUUID();
+        given(scenario.getId()).willReturn(scenarioId);
+        FloorGridCell originCell = mock(FloorGridCell.class);
+        UUID originCellId = UUID.randomUUID();
+        FireZone origin = mock(FireZone.class);
+        given(origin.getFloorId()).willReturn(floorId);
+        given(origin.getGridCellId()).willReturn(originCellId);
+        given(fireZoneRepository.findByScenario_IdAndIsManualAddTrue(scenarioId)).willReturn(List.of(origin));
+        MapEdge originEdge = MapEdge.create(triggerEdge.getFloor(), mock(MapNode.class), mock(MapNode.class), 3.0, true);
+        UUID originEdgeId = UUID.randomUUID();
+        ReflectionTestUtils.setField(originEdge, "id", originEdgeId);
+        given(mapEdgeGridCellRepository.findAllByGridCell_IdIn(List.of(originCellId)))
+                .willReturn(List.of(MapEdgeGridCell.create(originEdge, originCell)));
+        // 관리자 화면·유도등이 보여주는 최초 경로(발화점 우회)가 이번에 번진 triggerEdge를 지난다.
+        given(evacuationRouteService.findShortestRoute(floorId, startNodeId, Set.of(originEdgeId)))
+                .willReturn(new EvacuationRoute(List.of(triggerEdgeFromNode, triggerEdgeToNode), 8.0));
+
+        MapNode exitNode = MapNode.create(mock(Floor.class), "STAIR1", NodeType.STAIR, "STAIR1", 0, 0, true);
+        ReflectionTestUtils.setField(exitNode, "id", UUID.randomUUID());
+        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any(), any()))
+                .willReturn(new EvacuationRoute(List.of(exitNode), 12.5));
+        RouteRecalculation saved = pendingRecalculation(CongestionLevel.CROWDED);
+        given(routeRecalculationRepository.save(any())).willReturn(saved);
+
+        routeRecalculationService.triggerForFireSpread(session, List.of(originEdge, triggerEdge));
+
+        verify(routeRecalculationRepository, times(1)).save(any());
+        verify(trainingEventPublisher, times(1)).publishRouteRecalculationRequestedAfterCommit(saved);
+    }
+
+    @Test
+    @DisplayName("같은 화재 우회 후보가 이미 대기 중이면 취소·재생성하지 않고 그대로 둔다")
+    void triggerForFireSpread_sameCandidateAlreadyPending_keepsIt() {
+        MapNode exitNode = MapNode.create(mock(Floor.class), "STAIR1", NodeType.STAIR, "STAIR1", 0, 0, true);
+        ReflectionTestUtils.setField(exitNode, "id", UUID.randomUUID());
+        RouteRecalculation existing = pendingWithNodes(List.of(exitNode.getId()));
+        given(routeRecalculationRepository.findAllByTrainingSession_IdAndStatus(
+                session.getId(), RecalculationStatus.PENDING)).willReturn(List.of(existing));
+        givenNoApprovedHistory();
+        givenDirectRouteCrossesTriggerEdge();
+        given(evacuationRouteService.findShortestRoute(any(), any(), anySet(), any(), any()))
+                .willReturn(new EvacuationRoute(List.of(exitNode), 12.5));
+
+        routeRecalculationService.triggerForFireSpread(session, List.of(triggerEdge));
+
+        assertThat(existing.getStatus()).isEqualTo(RecalculationStatus.PENDING);
+        verify(trainingEventPublisher, never()).publishRouteRecalculationCancelledAfterCommit(any());
+        verify(routeRecalculationRepository, never()).save(any());
+        verify(trainingEventPublisher, never()).publishRouteRecalculationRequestedAfterCommit(any());
     }
 
     @Test
@@ -1538,37 +1591,35 @@ class RouteRecalculationServiceTest {
     }
 
     @Test
-    @DisplayName("진행 중인 세션에 승인된 재탐색이 없으면 INITIAL 경로 조회도 현재 화재 구간을 제외하고 계산한다")
-    void getCurrentRoute_runningWithoutApprovedRecalculation_excludesCurrentlyFiredEdges() {
+    @DisplayName("진행 중인 세션에 승인된 재탐색이 없으면 INITIAL 경로는 번진 화재가 아니라 최초 발화점 구간만 제외한다")
+    void getCurrentRoute_runningWithoutApprovedRecalculation_excludesOnlyOriginEdges() {
+        // 번진 화재까지 빼면 화면 경로가 불을 조용히 피해 가서, 유도등이 안내 중인 경로에 불이 닿아도
+        // 관리자가 알 수 없고 재탐색 판단 기준(resolveActiveRoute)과도 어긋난다.
         UUID recSessionId = UUID.randomUUID();
         UUID scenarioId = UUID.randomUUID();
         Instant createdAt = Instant.now();
-        TrainingSession scheduledSession = TrainingSession.schedule(mock(User.class), scenario);
-        scheduledSession.start(createdAt);
-        ReflectionTestUtils.setField(scheduledSession, "id", recSessionId);
-        ReflectionTestUtils.setField(scheduledSession, "createdAt", createdAt);
+        TrainingSession runningSession = TrainingSession.schedule(mock(User.class), scenario);
+        runningSession.start(createdAt);
+        ReflectionTestUtils.setField(runningSession, "id", recSessionId);
+        ReflectionTestUtils.setField(runningSession, "createdAt", createdAt);
         given(trainingSessionRepository.findByIdAndScenario_Building_SchoolName(recSessionId, SCHOOL_NAME))
-                .willReturn(Optional.of(scheduledSession));
+                .willReturn(Optional.of(runningSession));
         given(routeRecalculationRepository.findFirstByTrainingSession_IdAndStatusOrderByResolvedAtDesc(
                 recSessionId, RecalculationStatus.APPROVED))
                 .willReturn(Optional.empty());
         given(scenario.getId()).willReturn(scenarioId);
 
-        FloorGridCell firedCell = mock(FloorGridCell.class);
-        UUID firedCellId = UUID.randomUUID();
-        given(firedCell.getId()).willReturn(firedCellId);
-        given(floorGridCellRepository.findAllByFloor_IdAndIsFiredTrue(floorId)).willReturn(List.of(firedCell));
-
-        FireZone fireZone = mock(FireZone.class);
-        given(fireZone.getGridCellId()).willReturn(firedCellId);
-        given(fireZoneRepository.findByScenario_IdAndFloor_Id(scenarioId, floorId)).willReturn(List.of(fireZone));
-
-        MapEdge firedEdge = MapEdge.create(triggerEdge.getFloor(), mock(MapNode.class), mock(MapNode.class), 3.0, true);
-        UUID firedEdgeId = UUID.randomUUID();
-        ReflectionTestUtils.setField(firedEdge, "id", firedEdgeId);
-        MapEdgeGridCell mapping = MapEdgeGridCell.create(firedEdge, firedCell);
-        given(mapEdgeGridCellRepository.findAllByGridCell_IdIn(List.of(firedCellId))).willReturn(List.of(mapping));
-
+        FloorGridCell originCell = mock(FloorGridCell.class);
+        UUID originCellId = UUID.randomUUID();
+        FireZone origin = mock(FireZone.class);
+        given(origin.getFloorId()).willReturn(floorId);
+        given(origin.getGridCellId()).willReturn(originCellId);
+        given(fireZoneRepository.findByScenario_IdAndIsManualAddTrue(scenarioId)).willReturn(List.of(origin));
+        MapEdge originEdge = MapEdge.create(triggerEdge.getFloor(), mock(MapNode.class), mock(MapNode.class), 3.0, true);
+        UUID originEdgeId = UUID.randomUUID();
+        ReflectionTestUtils.setField(originEdge, "id", originEdgeId);
+        given(mapEdgeGridCellRepository.findAllByGridCell_IdIn(List.of(originCellId)))
+                .willReturn(List.of(MapEdgeGridCell.create(originEdge, originCell)));
         given(evacuationRouteService.findShortestRoute(eq(floorId), eq(startNodeId), anySet()))
                 .willReturn(new EvacuationRoute(List.of(representativeStart), 5.0));
 
@@ -1576,7 +1627,8 @@ class RouteRecalculationServiceTest {
 
         ArgumentCaptor<Set<UUID>> excludedEdgesCaptor = ArgumentCaptor.forClass(Set.class);
         verify(evacuationRouteService).findShortestRoute(eq(floorId), eq(startNodeId), excludedEdgesCaptor.capture());
-        assertThat(excludedEdgesCaptor.getValue()).contains(firedEdgeId);
+        assertThat(excludedEdgesCaptor.getValue()).containsExactly(originEdgeId);
+        verify(floorGridCellRepository, never()).findAllByFloor_IdAndIsFiredTrue(any());
     }
 
     @Test

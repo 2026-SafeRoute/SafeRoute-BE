@@ -148,14 +148,9 @@ public class RouteDiagnosisService {
                 .toList();
 
         // 재탐색 판단 기준이 되는 "현재 활성 경로". 승인 이력이 없으면 RouteRecalculationService.resolveActiveRoute()는
-        // 화재를 빼지 않은 직행 경로를 쓰고, 그것도 없으면 빈 경로를 쓴다(그러면 재탐색이 일어나지 않는다).
-        // 재탐색 제안은 관리자가 바로 승인한다고 가정하므로, 그 뒤로는 승인된 후보가 활성 경로가 된다.
-        List<UUID> activeRoute;
-        try {
-            activeRoute = nodeIds(evacuationRouteService.findShortestRoute(floorId, startNodeId));
-        } catch (ApiException exception) {
-            activeRoute = List.of();
-        }
+        // 최초 안내 경로(발화점 구간만 제외)를 쓴다. 재탐색 제안은 관리자가 바로 승인한다고 가정하므로,
+        // 그 뒤로는 승인된 후보가 활성 경로가 된다.
+        List<UUID> activeRoute = nodeIds(initialRoute);
 
         List<Event> events = new ArrayList<>();
         Set<Integer> spreadGenerations = new HashSet<>(generationByCellId.values());

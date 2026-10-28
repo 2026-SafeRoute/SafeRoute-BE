@@ -206,7 +206,9 @@ class FireSpreadStepServiceRealRecalculationIntegrationTest {
         // 같은 층을 다른 시나리오가 동시에 쓸 수 있어 FloorGridCell.isFired만으로는 부족하다 -
         // firedCell이 "이 시나리오"의 화재 구간이라는 FireZone 기록도 함께 남긴다(RouteRecalculationService/
         // FireSpreadStepService의 시나리오 범위 필터를 실제로 통과하는지 검증).
-        fireZoneRepository.save(FireZone.createOrigin(scenario, floor, firedCell));
+        // 최초 발화점이 아니라 이미 번진 화재로 둔다 - 최초 발화점 구간은 최초 안내 경로(활성 경로)에서
+        // 이미 빠져 있으므로, "번진 불이 활성 경로에 닿는" 상황을 만들려면 번진 화재여야 한다.
+        fireZoneRepository.save(FireZone.createSpread(scenario, floor, firedCell, 1));
 
         TrainingSession session = TrainingSession.create(
                 TrainingStatus.RUNNING, Instant.now().minusSeconds(30), admin, scenario);
@@ -259,7 +261,9 @@ class FireSpreadStepServiceRealRecalculationIntegrationTest {
                 "fire-blocked-admin", "password", "fire-blocked@saferoute.com", UserRole.MANAGER, SCHOOL_NAME));
         TrainingScenario scenario = trainingScenarioRepository.save(TrainingScenario.create(
                 "경로 소멸 테스트 시나리오", 10, Instant.now(), false, FireSpreadSpeed.FAST, building, admin, start));
-        fireZoneRepository.save(FireZone.createOrigin(scenario, floor, firedCell));
+        // 최초 발화점이 아니라 이미 번진 화재로 둔다 - 최초 발화점 구간은 최초 안내 경로(활성 경로)에서
+        // 이미 빠져 있으므로, "번진 불이 활성 경로에 닿는" 상황을 만들려면 번진 화재여야 한다.
+        fireZoneRepository.save(FireZone.createSpread(scenario, floor, firedCell, 1));
 
         TrainingSession session = TrainingSession.create(
                 TrainingStatus.RUNNING, Instant.now().minusSeconds(30), admin, scenario);
