@@ -11,7 +11,7 @@ import java.util.Optional;
 // 자동 평가 보고서와 개선 권고사항을 고정 템플릿으로 생성
 public final class TrainingReportNarrativeGenerator {
 
-    // 이 점수 이상이면 강점 문장, 미만이면 개선 권고 대상
+    // 이 점수 이상이면 강점 문장, 미만이면 개선 권고 대상 (병목은 예외 - 횟수가 1회 이상이면 항상 권고)
     private static final double GOOD_SCORE_THRESHOLD = 85.0;
     // 이 밀집도를 넘는 구역이 있으면 그 구역 이름을 집어 권고한다.
     private static final double CROWDED_ZONE_THRESHOLD_PERCENT = 70.0;
@@ -47,9 +47,17 @@ public final class TrainingReportNarrativeGenerator {
     }
 
     public static List<RecommendationPoint> buildRecommendations(ReportNarrativeInput input) {
-        return buildFindings(input).stream()
+        List<Finding> findings = buildFindings(input);
+        // 항상 보여야 하는 항목(병목)은 먼저 자리를 잡고, 나머지 자리를 우선순위 순으로 채운다.
+        // 그래야 다른 항목이 모두 더 나빠도 병목 권고가 3개 상한에 밀려 사라지지 않는다.
+        List<Finding> selected = new ArrayList<>(findings.stream().filter(Finding::alwaysShown).toList());
+        findings.stream()
+                .filter(f -> !f.alwaysShown())
                 .sorted(Comparator.comparing(Finding::priority))
-                .limit(MAX_RECOMMENDATIONS)
+                .limit(Math.max(0, MAX_RECOMMENDATIONS - selected.size()))
+                .forEach(selected::add);
+        return selected.stream()
+                .sorted(Comparator.comparing(Finding::priority))
                 .map(f -> new RecommendationPoint(f.priority(), f.title(), f.description()))
                 .toList();
     }
@@ -82,7 +90,9 @@ public final class TrainingReportNarrativeGenerator {
             ));
         }
 
-        if (input.bottleneckScore() < GOOD_SCORE_THRESHOLD) {
+        // 병목은 점수와 무관하게 한 번이라도 감지됐으면 항상 권고에 적는다 - 어느 CCTV·구간에서
+        // 병목이 났는지는 횟수가 적어도 관리자가 꼭 봐야 하는 정보다.
+        if (input.bottleneckCount() > 0) {
             Optional<ZoneDensityPoint> worstZone = input.zoneDensities().stream()
                     .filter(z -> z.getAvgDensityPercent() >= CROWDED_ZONE_THRESHOLD_PERCENT)
                     .max(Comparator.comparingDouble(ZoneDensityPoint::getAvgDensityPercent));
@@ -114,7 +124,7 @@ public final class TrainingReportNarrativeGenerator {
                                     input.bottleneckCount()));
 
             findings.add(new Finding(priorityFor(input.bottleneckScore()), title, description, narrative,
-                    input.bottleneckScore()));
+                    input.bottleneckScore(), true));
         }
 
         if (input.deviationScore() < GOOD_SCORE_THRESHOLD) {
@@ -171,7 +181,13 @@ public final class TrainingReportNarrativeGenerator {
         return minutes + "분 " + seconds + "초";
     }
 
+    // alwaysShown: 3개 상한에 밀리지 않고 항상 권고에 남겨야 하는 항목(병목).
     private record Finding(RecommendationPriority priority, String title, String description,
-                            String narrativeSentence, double score) {
+                            String narrativeSentence, double score, boolean alwaysShown) {
+
+        Finding(RecommendationPriority priority, String title, String description,
+                String narrativeSentence, double score) {
+            this(priority, title, description, narrativeSentence, score, false);
+        }
     }
 }
