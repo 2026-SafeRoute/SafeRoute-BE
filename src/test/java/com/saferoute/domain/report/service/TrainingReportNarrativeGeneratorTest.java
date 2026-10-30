@@ -183,4 +183,51 @@ class TrainingReportNarrativeGeneratorTest {
         // LOW였던 "유도등 안내 점검"(경로준수율)은 3개 상한에 밀려 제외된다.
         assertThat(recommendations).extracting(RecommendationPoint::getTitle).doesNotContain("유도등 안내 점검");
     }
+
+    @Test
+    @DisplayName("병목이 1회뿐이라 점수가 기준(85) 이상이어도 병목 권고는 항상 나온다")
+    void singleBottleneck_alwaysGeneratesRecommendation() {
+        ReportNarrativeInput input = new ReportNarrativeInput(
+                "정기 훈련", 50, 50, BigDecimal.valueOf(100.0),
+                200, 300, 100,
+                1, 90, // bottleneckScore=90 -> 기준 이상이지만 병목 1회
+                0.0, 100,
+                95.0, Grade.A,
+                List.of(),
+                "CCTV_122(복도 4 – 복도 5 구간)");
+
+        List<RecommendationPoint> recommendations = TrainingReportNarrativeGenerator.buildRecommendations(input);
+
+        assertThat(recommendations).hasSize(1);
+        assertThat(recommendations.get(0).getTitle()).isEqualTo("혼잡 구간 분산 유도");
+        assertThat(recommendations.get(0).getPriority()).isEqualTo(RecommendationPriority.LOW);
+        assertThat(recommendations.get(0).getDescription())
+                .isEqualTo("CCTV_122(복도 4 – 복도 5 구간)에서 병목(혼잡) 1회 감지");
+
+        String summary = TrainingReportNarrativeGenerator.buildSummary(input);
+        assertThat(summary).contains("개선:");
+        assertThat(summary).contains("CCTV_122(복도 4 – 복도 5 구간)에서 병목이 1회 감지되어");
+        assertThat(summary).doesNotContain("구역별 병목 없이");
+    }
+
+    @Test
+    @DisplayName("다른 항목이 모두 더 나빠 4개가 돼도 병목 권고는 3개 상한에 밀리지 않고 남는다")
+    void bottleneckFinding_survivesTheCapEvenWhenLowestPriority() {
+        // 대피시간(0=HIGH), 대피 성공률(40=HIGH), 경로준수율(60=MEDIUM), 병목(90=LOW) - 병목이 가장 낮은 우선순위
+        ReportNarrativeInput input = new ReportNarrativeInput(
+                "정기 훈련", 50, 20, BigDecimal.valueOf(40.0),
+                600, 300, 0,
+                1, 90,
+                0.4, 60,
+                40.0, Grade.F,
+                List.of());
+
+        List<RecommendationPoint> recommendations = TrainingReportNarrativeGenerator.buildRecommendations(input);
+
+        assertThat(recommendations).hasSize(3);
+        assertThat(recommendations).extracting(RecommendationPoint::getTitle)
+                .containsExactly("대피 동선 재점검", "안전 교육 보강 필요", "혼잡 구간 분산 유도");
+        // 병목이 자리를 차지하므로 MEDIUM이던 "유도등 안내 점검"(경로준수율)이 대신 밀린다.
+        assertThat(recommendations).extracting(RecommendationPoint::getTitle).doesNotContain("유도등 안내 점검");
+    }
 }
